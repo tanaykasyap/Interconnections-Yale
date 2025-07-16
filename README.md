@@ -1,6 +1,6 @@
 # Interconnections-Yale
 This is the project I worked for Professor Nicholas Ryan as a Pre-Doc research fellow at Yale during 2024-25
-# Interconnections-Yale-Pre-Doc-
+ 
 This is the project I was working on for Professor Nicholas Ryan at Yale as a pre-doc research fellow during 2024-2025.
 The project involved estimating a structural model of dynamic entry of energy firms/power plants joining the California Grid (California Independent System Operator - CAISO). Energy powerplants apply to join the "interconnection" queue and recieve a cost draw from CAISO, which involves a connection cost at the particular location (POI cost) and a network cost which reflects the marginal burned imposed by the power plant on the energy grid via the need to upgrade grid capacity. The cost studies are updates periodically as new firms join and existing firm drop out from the queue. Thus cost studies are in phases - Phase I, Phase II etc.
 
