@@ -1,0 +1,2565 @@
+ 
+
+
+---
+title: "Cost Scraper Checker"
+author: "Tanay"
+date: "`r Sys.Date()`"
+output: pdf_document
+---
+
+# detach("package:sjmisc", unload = TRUE)
+
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+library(tidyverse)
+library(readr)
+library(ggplot2)
+library(dplyr)
+library(stringr)
+library(readxl)
+library(openxlsx)
+library(tidyverse)
+library(dplyr)
+library(broom)
+library(lubridate)
+library(car)
+library("writexl")
+library(ggplot2)
+library(kableExtra)
+library(glmnet)
+library(stargazer)
+library(janitor)
+library(data.table)
+library(stringr)
+
+# Clear the console and environment
+rm(list=ls())
+
+# Set project path based on the environment (RStudio or command line)
+args = commandArgs(trailingOnly = TRUE)
+if (Sys.getenv("RSTUDIO") == 1) {
+  sys_info <- Sys.info()
+  if (sys_info["sysname"] == "Windows") {
+    project_root <- paste(Sys.getenv("USERPROFILE"), "/Dropbox/interconnections_data/", sep="")
+  } else if (sys_info["sysname"] == "Darwin") {
+    project_root <- paste(Sys.getenv("HOME"), "/Dropbox/interconnections_data/", sep="")
+  }
+} else {
+  project_root <- args[1]
+}
+```
+
+```{r load-data, echo=FALSE, results='hide', warning=FALSE}
+ 
+
+ 
+scraped_itemized_data<- read.csv(paste0(project_root,"data/ic_studies/raw/04_intermediate_scraped_data/phase_1_cost_data/all_clusters/costs_phase_1_all_clusters_itemized.csv"))
+scraped_total_data<- read.csv(paste0(project_root,"data/ic_studies/raw/04_intermediate_scraped_data/phase_1_cost_data/all_clusters/costs_phase_1_all_clusters_total.csv"))
+phase_status <- read.csv(paste0(project_root,"data/ic_studies/raw/04_intermediate_scraped_data/phase_status/phase_status_updated.csv"))
+project_summary <- read.csv(paste0(project_root, "/data/working/all_projects_summary_clean.csv"))
+# Load the checklist data (Phase II information)
+RIMS_checklist_updated <- read_csv(paste0(project_root, "/data/working/clean_RIMS_checklist_cluster_updated.csv"))
+
+ph2_scraped_itemized_data <-read.csv(paste0(project_root,"data/ic_studies/raw/04_intermediate_scraped_data/phase_2_cost_data/all_clusters/costs_phase_2_all_clusters_itemized.csv"))
+ph2_scraped_total_data<- read.csv(paste0(project_root,"data/ic_studies/raw/04_intermediate_scraped_data/phase_2_cost_data/all_clusters/costs_phase_2_all_clusters_total.csv"))
+
+
+
+```
+
+```{r data clean up, echo=FALSE, warning=FALSE}
+# If any table in the original pdf had None under either upgrade or description or like --, then we code the costs(just estimated and escalated) to be zero rather than as NA. As NA is supposed to represent if the table or column did not exist in the original table in the pdf.
+ scraped_itemized_data <- scraped_itemized_data %>%
+  mutate(
+    description = ifelse(description == "--", "None", description),
+    estimated_time_to_construct = ifelse(estimated_time_to_construct == "--", "0", estimated_time_to_construct)
+  )
+
+
+
+scraped_itemized_data <- scraped_itemized_data %>%
+  mutate(
+    estimated_cost = ifelse(upgrade == "None" & is.na(estimated_cost), 0, estimated_cost),
+    escalated_cost = ifelse(upgrade == "None" & is.na(escalated_cost), 0, escalated_cost),
+    cost_allocation_factor = ifelse(upgrade == "None" & is.na(cost_allocation_factor), 0, cost_allocation_factor)
+  )
+
+# Replace NA with 0 if description is "None"
+scraped_itemized_data<- scraped_itemized_data %>%
+  mutate(
+estimated_cost = ifelse(description == "None" & is.na(estimated_cost), 0, estimated_cost),
+    escalated_cost = ifelse(description == "None" & is.na(escalated_cost), 0, escalated_cost),
+    cost_allocation_factor = ifelse(description == "None" & is.na(cost_allocation_factor), 0, cost_allocation_factor)
+  )
+
+scraped_itemized_data <- scraped_itemized_data %>%
+  left_join(
+    project_summary %>% 
+      select(q_id, capacity) %>% 
+      distinct() %>% 
+      rename(capacity_proj = capacity),
+    by = "q_id",
+    relationship = "many-to-many"  # Declare the many-to-many relationship explicitly
+  ) %>%
+  mutate(
+    # Convert both columns to numeric
+    capacity = as.numeric(capacity),
+    capacity_proj = as.numeric(capacity_proj),
+    # Use coalesce to replace NA values in scraped capacity with project capacity
+    capacity = coalesce(capacity, capacity_proj)
+  )
+
+scraped_total_data <- scraped_total_data %>%
+  left_join(
+    project_summary %>% 
+      select(q_id, capacity) %>% 
+      distinct()%>% 
+      rename(capacity_proj = capacity),
+    by = "q_id",
+    relationship = "many-to-many"  # Declare the many-to-many relationship explicitly
+  ) %>%
+  mutate(
+    # Convert both columns to numeric
+    capacity = as.numeric(capacity),
+    capacity_proj = as.numeric(capacity_proj),
+    # Use coalesce to replace NA values in scraped capacity with project capacity
+    capacity = coalesce(capacity, capacity_proj)
+  )
+
+
+         
+          
+
+```
+
+# This confirms the number from the checklist
+
+
+
+```{r Scraped Status Table wirh TC, echo=FALSE, echo= FALSE, warning=FALSE}
+library(dplyr)
+library(tidyr)
+library(knitr)
+
+# ——————————————————————————————————————————————————————————————————————————————
+# PREREQUISITES (these must already be in your environment):
+#   • phase_status                (with q_id, cluster_number, Style, ph_1, ph_2)
+#   • scraped_itemized_data       (Phase I scraped; contains q_id)
+#   • ph2_scraped_itemized_data   (Phase II scraped; contains q_id)
+#   • RIMS_checklist_updated      (with q_id and checklist_phase == "Phase II Study")
+# ——————————————————————————————————————————————————————————————————————————————
+
+# 1) Clean q_id everywhere so they match exactly
+clean_qid <- function(df) {
+  df %>% mutate(q_id = as.character(q_id) %>% sub("\\.0$", "", .))
+}
+
+phase_status                <- clean_qid(phase_status)
+scraped_itemized_data       <- clean_qid(scraped_itemized_data)
+ph2_scraped_itemized_data   <- clean_qid(ph2_scraped_itemized_data)
+RIMS_checklist_updated      <- clean_qid(RIMS_checklist_updated)
+
+# 2) Precompute lookup sets
+phase2_checklist_ids <- RIMS_checklist_updated %>%
+  filter(checklist_phase == "Phase II Study") %>%
+  pull(q_id)
+
+phase2_scraped_ids   <- ph2_scraped_itemized_data$q_id
+
+# 3) Build one unified phase_status_cleaned
+phase_status_cleaned <- phase_status %>%
+  mutate(
+    # Normalize cluster_number into a clean factor label
+    cluster_num   = as.integer(gsub("\\D", "", cluster_number)),
+    cluster_clean = if_else(
+      is.na(cluster_num),
+      cluster_number,
+      as.character(cluster_num)
+    ),
+    # Phase I + Phase II presence flags
+    ph2_present = if_else(
+      q_id %in% phase2_checklist_ids, #| q_id %in% phase2_scraped_ids,
+      "yes", "no"
+    )
+  ) %>%
+  select(q_id, cluster_clean, Style, ph_1, ph_2, ph2_present) %>%
+  mutate(
+    # scraped flags as 0/1
+    scraped_ph1 = as.integer(q_id %in% scraped_itemized_data$q_id),
+    scraped_ph2 = as.integer(q_id %in% phase2_scraped_ids)
+  )
+
+# 4) Order the cluster factor once
+special <- c("TC", "SGIP-TC")
+numeric_levels <- phase_status_cleaned$cluster_clean %>%
+  setdiff(special) %>% as.integer() %>% sort(na.last=TRUE) %>% as.character()
+phase_status_cleaned <- phase_status_cleaned %>%
+  mutate(cluster_clean = factor(cluster_clean, levels = c(special, numeric_levels)))
+
+# 5) Table A: Overall Scraping Status by Phase
+phase1_projects   <- n_distinct(phase_status_cleaned$q_id)
+phase1_downloaded <- n_distinct(phase_status_cleaned$q_id[phase_status_cleaned$ph_1 == "yes"])
+phase1_scraped    <- sum(phase_status_cleaned$scraped_ph1)
+
+phase2_projects   <- n_distinct(phase_status_cleaned$q_id[phase_status_cleaned$ph2_present == "yes"])
+phase2_downloaded <- n_distinct(phase_status_cleaned$q_id[phase_status_cleaned$ph_2 == "yes"])
+phase2_scraped    <- sum(phase_status_cleaned$scraped_ph2)
+
+total_projects_comparison <- tibble(
+  Phase             = c("Phase 1", "Phase 2"),
+  `Projects Number` = c(phase1_projects,   phase2_projects),
+  Downloaded        = c(phase1_downloaded, phase2_downloaded),
+  `Scraped Projects`= c(phase1_scraped,    phase2_scraped)
+)
+
+kable(total_projects_comparison, caption = "Overall Scraping Status by Phase")
+
+
+# 6) Table B: Projects by Cluster (Phase I vs Scraped)
+projects_by_cluster_ph1 <- phase_status_cleaned %>%
+  filter(!is.na(cluster_clean)) %>%
+  group_by(cluster = cluster_clean) %>%
+  summarise(
+    `Total Number`      = n_distinct(q_id),
+    `Number Downloaded` = n_distinct(q_id[ph_1 == "yes"]),
+    `Number Scraped`    = sum(scraped_ph1),
+    .groups = "drop"
+  )
+
+kable(projects_by_cluster_ph1, caption = "Projects by Cluster: Phase 1 vs Scraped")
+
+
+# 7) Table C: Projects by Cluster (Phase II vs Scraped)
+projects_by_cluster_ph2 <- phase_status_cleaned %>%
+  filter(ph2_present == "yes") %>%
+  group_by(cluster = cluster_clean) %>%
+  summarise(
+    `Total Number`      = n_distinct(q_id),
+    `Number Downloaded` = n_distinct(q_id[ph_2 == "yes"]),
+    `Number Scraped`    = sum(scraped_ph2),
+    .groups = "drop"
+  )
+
+kable(projects_by_cluster_ph2, caption = "Projects by Cluster: Phase 2 vs Scraped")
+
+
+# 8) Table D: Projects by Cluster & Style (Phase I vs Scraped)
+projects_by_cluster_style_ph1 <- phase_status_cleaned %>%
+  filter(!is.na(Style)) %>%
+  group_by(cluster = cluster_clean, Style) %>%
+  summarise(
+    `Total Number`      = n_distinct(q_id),
+    `Number Downloaded` = n_distinct(q_id[ph_1 == "yes"]),
+    `Number Scraped`    = sum(scraped_ph1),
+    .groups = "drop"
+  )
+
+kable(
+  projects_by_cluster_style_ph1,
+  caption = "Projects by Cluster and Style: Phase 1 vs Scraped",
+  col.names = c("Cluster","Style","Total Number","Number Downloaded","Number Scraped")
+)
+
+
+```
+```{r phase 2 projects scraped but not in checklist, echo= FALSE, warning=FALSE}
+ 
+library(dplyr)
+library(tidyr)
+library(knitr)
+
+# Get unique clusters
+clusters <- unique(phase_status_cleaned$cluster_clean)
+
+# 1) Detailed listing by cluster
+for (cl in clusters) {
+  cat("\n\n## Cluster", cl, "\n\n")
+  
+  df_cl <- phase_status_cleaned %>%
+    filter(
+      cluster_clean == cl,
+      scraped_ph2   == 1,
+      ph2_present   == "no"
+    ) %>%
+    select(q_id) %>%
+    distinct()
+  
+  if (nrow(df_cl) > 0) {
+    print(
+      kable(
+        df_cl,
+        caption = paste(
+          "Cluster", cl, 
+          "– q_ids scraped for Phase II but not marked present"
+        )
+      )
+    )
+  } else {
+    cat("None found for this cluster.\n")
+  }
+}
+
+# 2) Summary table: count of such q_ids by cluster
+summary_df <- phase_status_cleaned %>%
+  filter(scraped_ph2 == 1, ph2_present == "no") %>%
+  group_by(cluster = cluster_clean) %>%
+  summarise(`Missing q_id Count` = n_distinct(q_id), .groups = "drop") %>%
+  # include clusters with zero by completing the full list
+  complete(cluster = clusters, fill = list(`Missing q_id Count` = 0)) %>%
+  arrange(factor(cluster, levels = clusters))
+
+kable(
+  summary_df,
+  caption = "Number of q_ids scraped for Phase II but not in checklist, by cluster"
+)
+ 
+ 
+```
+
+```{r scraped_status_table_with_TC_old, include=FALSE}
+library(dplyr)
+library(tidyr)
+library(knitr)
+library(readr)
+
+# ---- Phase Status Cleaning ----
+# Create a cleaned phase_status data frame that preserves non-numeric cluster values.
+# Also include the ph_1 column for later counting.
+phase_status_cleaned <- phase_status %>%
+  mutate(q_id = as.character(q_id),
+         # Extract numeric part; if there are no digits (e.g., "TC" or "SGIP-TC"), this yields NA.
+         cluster_numeric = as.integer(gsub("\\D", "", cluster_number)),
+         # If numeric extraction is NA, use the original cluster_number; otherwise, use the numeric value as a string.
+         cluster_clean = ifelse(is.na(cluster_numeric), cluster_number, as.character(cluster_numeric))) %>%
+  # Keep only the columns we need (include Style and ph_1 for grouping and counting)
+  select(q_id, cluster_clean, Style, ph_1)
+
+# ---- Convert q_id to character in data sets ----
+scraped_itemized_data <- scraped_itemized_data %>% mutate(q_id = as.character(q_id))
+scraped_total_data <- scraped_total_data %>% mutate(q_id = as.character(q_id))
+
+
+scraped_itemized_data <- scraped_itemized_data %>%
+  mutate(q_id = sub("\\.0$", "", q_id))
+
+phase_status <- phase_status %>%
+  mutate(q_id = sub("\\.0$", "", as.character(q_id)))
+
+
+# ---- Count the Total Number of Unique q_ids in the Scraped Data ----
+total_unique_q_ids <- scraped_itemized_data %>%
+  summarise(
+    total_unique_q_ids = n_distinct(q_id),
+    count = n()
+  )
+# knitr::kable(total_unique_q_ids, caption = "Total Unique q_ids and Count")
+
+# ---- Left Join the Cluster from phase_status_cleaned into data and total based on q_id ----
+# Explicitly rename cluster_clean to cluster_phase before joining.
+scraped_itemized_data <- scraped_itemized_data %>%
+  left_join(phase_status_cleaned %>% 
+              select(q_id, cluster_clean) %>% 
+              distinct() %>% 
+              rename(cluster_phase = cluster_clean),
+            by = "q_id") %>%
+  # If data already has a cluster, keep it; otherwise, use cluster_phase from phase_status_cleaned.
+  mutate(cluster = ifelse(is.na(cluster), cluster_phase, cluster),
+         # Convert the final cluster to character so that non-numeric values are preserved.
+         cluster = as.character(cluster)) %>%
+  select(-cluster_phase)
+
+scraped_total_data <- scraped_total_data %>%
+  left_join(phase_status_cleaned %>% 
+              select(q_id, cluster_clean) %>% 
+              distinct() %>% 
+              rename(cluster_phase = cluster_clean),
+            by = "q_id") %>%
+  mutate(cluster = ifelse(is.na(cluster), cluster_phase, cluster),
+         cluster = as.character(cluster)) %>%
+  select(-cluster_phase)
+
+# ---- Order the cluster values: TC, SGIP-TC, then numeric in ascending order ----
+special_clusters <- c("TC", "SGIP-TC")
+# Determine the other clusters that are numeric (they are stored as character)
+other_clusters <- setdiff(unique(scraped_itemized_data$cluster), special_clusters)
+# Convert remaining values to numeric, sort them, then convert back to character
+other_levels <- as.character(sort(as.numeric(other_clusters)))
+new_levels <- c(special_clusters, other_levels)
+
+scraped_itemized_data <- scraped_itemized_data %>%
+  mutate(cluster = factor(cluster, levels = new_levels))
+scraped_total_data <- scraped_total_data %>%
+  mutate(cluster = factor(cluster, levels = new_levels))
+
+ 
+
+
+
+# Extract unique q_ids for Phase II studies
+phase2_qids <- RIMS_checklist_updated %>%
+  filter(checklist_phase == "Phase II Study") %>%
+  distinct(q_id) %>%
+  pull(q_id)
+
+# Update phase_status with the phase 2 checklist indicator (ph2_present)
+phase_status <- phase_status %>%
+  mutate(ph2_present = if_else(q_id %in% phase2_qids, "yes", "no"))
+
+# Phase 1 counts
+phase1_projects   <- n_distinct(phase_status$q_id)
+phase1_downloaded <- n_distinct(phase_status$q_id[phase_status$ph_1 == "yes"])
+phase1_scraped    <- n_distinct(scraped_itemized_data$q_id)
+
+# Phase 2 counts
+phase2_projects   <- sum(phase_status$ph2_present == "yes", na.rm = TRUE)
+phase2_downloaded <- sum(phase_status$ph_2 == "yes", na.rm = TRUE)
+phase2_scraped    <- n_distinct(ph2_scraped_itemized_data$q_id) # or use n_distinct(phase2_qids)
+
+# Create the summary table with rows for Phase 1 and Phase 2
+total_projects_comparison <- tibble(
+  Phase = c("Phase 1", "Phase 2"),
+  `Projects Number` = c(phase1_projects, phase2_projects),
+  Downloaded = c(phase1_downloaded, phase2_downloaded),
+  `Scraped Projects` = c(phase1_scraped, phase2_scraped)
+)
+
+knitr::kable(total_projects_comparison, caption = "Overall Scraping Status by Phase 1, Phase 2")
+
+
+# PH2 yet to be identified
+
+ph2_mismatch_qids <- phase_status %>%
+  filter(ph2_present == "yes" & ph_2 != "yes") %>%
+  select(q_id) %>% 
+  arrange(as.numeric(q_id))
+  
+
+ph2_to_be_identified<- tibble(
+  `Q_id` = ph2_mismatch_qids 
+ )
+knitr::kable(ph2_to_be_identified, 
+             caption = "Q_ids for which there is a Phase 2 study, \\newline but PDF yet to be identified")
+
+
+# ---- Redefine factor ordering for phase_status_cleaned ----
+# (This is done so that grouping by cluster_clean in later tables uses the desired order.)
+all_clusters <- unique(phase_status_cleaned$cluster_clean)
+other_clusters <- setdiff(all_clusters, special_clusters)
+other_clusters_numeric <- suppressWarnings(as.numeric(other_clusters))
+other_clusters_numeric <- sort(other_clusters_numeric[!is.na(other_clusters_numeric)])
+all_levels <- c(special_clusters, as.character(other_clusters_numeric))
+
+phase_status_cleaned <- phase_status_cleaned %>%
+  mutate(cluster_clean = factor(cluster_clean, levels = all_levels))
+
+# ---- Projects by Cluster (Phase 1 vs Scraped) (Table B) ----
+projects_by_cluster <- phase_status_cleaned %>%
+  group_by(cluster_clean) %>%
+  summarise(
+    `Total Number`      = n_distinct(q_id),
+    
+    `Number Downloaded` = n_distinct(q_id[ph_1 == "yes"]),
+    `Number Scraped`    = sum(q_id %in% scraped_itemized_data$q_id)
+  ) %>%
+  arrange(cluster_clean)
+
+projects_by_cluster <- projects_by_cluster %>%
+  mutate(across(c(`Total Number`, `Number Downloaded`, `Number Scraped`), ~replace_na(.x, 0)))
+
+
+
+
+
+
+knitr::kable(projects_by_cluster, caption = "Projects by Cluster: Phase 1 vs Scraped")
+
+
+ 
+library(dplyr)
+library(knitr)
+
+# ---- Projects by Cluster (Phase 2 vs Scraped) ----
+projects_by_cluster_phase2 <- phase_status %>%
+  # ensure q_id is character
+  mutate(q_id = as.character(q_id)) %>%
+  # bring in the cleaned cluster label
+  left_join(
+    phase_status_cleaned %>% 
+      select(q_id, cluster_clean),
+    by = "q_id"
+  ) %>%
+  # preserve the same factor ordering you set up for phase 1
+  mutate(
+    cluster_clean = factor(
+      cluster_clean, 
+      levels = levels(phase_status_cleaned$cluster_clean)
+    )
+  ) %>%
+  # only Phase II studies:
+  filter(ph2_present == "yes") %>%
+  group_by(cluster_clean) %>%
+  summarise(
+    `Total Number`      = n_distinct(q_id),
+    `Number Downloaded` = n_distinct(q_id[ph_2 == "yes"]),
+    `Number Scraped`    = sum(q_id %in% ph2_scraped_itemized_data$q_id),
+    .groups = "drop"
+  ) %>%
+  # fill zeros where needed
+  mutate(across(`Total Number`:`Number Scraped`, ~replace_na(.x, 0))) %>%
+  arrange(cluster_clean)
+
+knitr::kable(
+  projects_by_cluster_phase2,
+  caption = "Projects by Cluster: Phase 2 vs Scraped"
+)
+
+
+
+
+# ---- Projects by Cluster and Style (Phase 1 vs Scraped) (Table C) ----
+# Add a flag to check if q_id exists in the scraped data
+phase_status_cleaned <- phase_status_cleaned %>%
+  mutate(scraped_flag = ifelse(q_id %in% scraped_itemized_data$q_id, 1, 0)) %>% 
+mutate(scraped_flag_ph2 = ifelse(q_id %in% ph2_scraped_itemized_data$q_id, 1, 0)) 
+
+projects_by_cluster_style_long <- phase_status_cleaned %>%
+  group_by(cluster_clean, Style) %>%
+  summarise(
+    `Total Number`      = n_distinct(q_id),
+    `Number Downloaded` = n_distinct(q_id[ph_1 == "yes"]),
+    `Number Scraped`    = sum(scraped_flag),
+    
+    .groups = "drop"
+  ) %>%
+  arrange(cluster_clean, Style)
+
+projects_by_cluster_style_long <- projects_by_cluster_style_long %>%
+  mutate(across(c(`Total Number`, `Number Downloaded`,`Number Scraped` ), ~replace_na(.x, 0)))
+
+knitr::kable(
+  projects_by_cluster_style_long, 
+  caption = "Projects by Cluster and Style: Phase 1 vs Scraped",
+  col.names = c("Cluster", "Style", "Total Number", "Number Downloaded", "Number Scraped")
+)
+
+
+```
+ 
+
+
+
+
+
+
+
+```{r missing non extracted data by clusters, echo=FALSE, results='hide'}
+ 
+
+# Load necessary library
+library(knitr)
+
+# Get unique clusters from phase_status_cleaned (adjust the column name if needed)
+clusters <- unique(phase_status_cleaned$cluster_clean)
+
+phase_status_cleaned <- phase_status_cleaned %>%
+  # bring in ph_2 from the full phase_status table
+  left_join(
+    phase_status %>% select(q_id, ph2_present,ph_2),
+    by = "q_id"
+  )
+
+# Loop through each cluster and create the table for q_id values in phase_status_cleaned missing from scraped_itemized_data
+for (cl in clusters) {
+  
+  # Print a header for the current cluster
+  cat("\n\n")
+  cat("## Cluster", cl, "\n\n")
+  
+  # Subset data frames for the current cluster
+  scraped_cluster <- subset(ph2_scraped_itemized_data, cluster == cl)
+  phase_cluster   <- subset(phase_status_cleaned, cluster_clean == cl)
+  
+  # Filter for ph_1 == 'yes' on the already subsetted data
+  phase_cluster   <- subset(phase_cluster, ph_2 == 'yes')
+  
+  # Get the q_id values in phase_cluster that are not in scraped_cluster
+  missing_q_ids <- setdiff(phase_cluster$q_id, scraped_cluster$q_id)
+  
+  # Retrieve the rows from phase_cluster that are missing in the scraped data
+  phase_not_in_itemized <- subset(phase_cluster, q_id %in% missing_q_ids)
+  
+  # Display the table if it is not empty
+  if (nrow(phase_not_in_itemized) > 0) {
+    print(kable(phase_not_in_itemized, caption = paste("Missing rows for cluster", cl)))
+  } else {
+    cat("No missing rows for this cluster.\n")
+  }
+}
+
+matched_by_cluster <- phase_status %>%
+ 
+  filter(ph2_present == "yes", ph_2 == "yes") %>%
+  # make sure q_id sorts numerically
+  mutate(q_id = as.character(q_id)) %>%
+  arrange(cluster_number, as.numeric(q_id)) %>%
+  # give each q_id within a cluster its own row‐index
+  group_by(cluster_number) %>%
+  mutate(idx = row_number()) %>%
+  ungroup() %>%
+  # pivot so that each cluster becomes a column
+  pivot_wider(
+    names_from   = cluster_number,
+    values_from  = q_id,
+    names_prefix = "cluster_"
+  ) %>%
+  # optionally drop the helper index column
+  select(-idx)
+
+ 
+
+```
+
+
+```{r missing cost allocation factor, echo=FALSE, results='hide'}
+
+# Identify q_id with NA in the cost_allocation_factor column
+q_ids_with_na_cost_allocation <- scraped_itemized_data %>%
+  filter(is.na(cost_allocation_factor)) %>%
+  pull(q_id)
+
+# Display the q_ids with NA in cost_allocation_factor
+if (length(q_ids_with_na_cost_allocation) > 0) {
+  print("q_ids with NA in cost_allocation_factor:")
+  print(q_ids_with_na_cost_allocation)
+} else {
+  print("No NA values found in cost_allocation_factor.")
+}
+
+# Replace NA values in cost_allocation_factor column with 0
+scraped_itemized_data <- scraped_itemized_data %>%
+  mutate(cost_allocation_factor = ifelse(is.na(cost_allocation_factor), 0, cost_allocation_factor))
+
+# Display the q_ids with NA in cost_allocation_factor
+if (length(q_ids_with_na_cost_allocation) > 0) {
+  print("q_ids with NA in cost_allocation_factor:")
+  print(q_ids_with_na_cost_allocation)
+} else {
+  print("No NA values found in cost_allocation_factor.")
+}
+
+```
+
+```{r check-missing-values, echo=FALSE, results='hide'}
+# Check for missing values in cost columns
+# missing_costs <- data %>%
+#   filter(if_any(contains("cost"), is.na)) %>%
+#   select(q_id)
+# 
+# if (nrow(missing_costs) > 0) {
+#   cat("q_ids with missing cost values:\n")
+#   unique(missing_costs$q_id)
+# } else {
+#   cat("No missing cost values found.\n")
+# }
+
+missing_escalated_costs <- scraped_itemized_data %>%
+  filter(  is.na(escalated_cost)) %>%
+  select(q_id)
+
+missing_estimated_costs <- scraped_itemized_data %>%
+  filter(  is.na(estimated_cost)) %>%
+  select(q_id)
+
+# Check and display missing q_ids
+if (nrow(missing_escalated_costs) > 0) {
+  cat("q_ids with missing  escalated costs:\n")
+  unique(missing_escalated_costs$q_id)
+} else {
+  cat("No missing values found in escalated cost columns.\n")
+}
+
+if (nrow(missing_estimated_costs) > 0) {
+  cat("q_ids with missing  escalated costs:\n")
+  unique(missing_estimated_costs$q_id)
+} else {
+  cat("No missing values found in estimated cost columns.\n")
+}
+
+```
+
+
+
+```{r Filling up the cost allocation factor column, results='hide', echo=FALSE}
+# Replace cost_allocation_factor where the current value is 0 and the respective total costs are positive
+scraped_itemized_data <- scraped_itemized_data %>%
+  mutate(
+    cost_allocation_factor = ifelse(
+      cost_allocation_factor == 0 & !is.na(total_escalated_cost) & total_escalated_cost > 0,
+      (escalated_cost / total_escalated_cost) * 100,
+      cost_allocation_factor
+    ),
+    cost_allocation_factor = ifelse(
+      cost_allocation_factor == 0 & !is.na(total_estimated_cost) & total_estimated_cost > 0,
+      (estimated_cost / total_estimated_cost) * 100,
+      cost_allocation_factor
+    )
+  )
+
+
+```
+
+#Data cleanup
+
+```{r errata, echo=FALSE, results='hide'}
+
+#data <- data %>%
+#  rename(total_estimated_cost_x_1000_escalated= total_estimated_cost_x_1000_escalalted)
+
+
+
+# Replace cost_allocation_factor where the current value is 0 and total estimated escalated cost is positive
+# data <- data %>%
+#   mutate(
+#     cost_allocation_factor = ifelse(
+#       cost_allocation_factor == 0 & total_escalated_cost > 0,
+#       (escalated_cost / total_escalated_cost) * 100,
+#       cost_allocation_factor
+#     )
+#   )
+# 
+# # Identify inconsistent time to construct
+# inconsistent_time_to_construct <- data %>%
+#   # Filtering rows with positive estimated and escalated costs
+#   filter(estimated_cost > 0 & escalated_cost > 0) %>%
+#   # Group by q_id and type_of_upgrade
+#   group_by(q_id, type_of_upgrade) %>%
+#   # Summarize to get the number of unique estimated_time_to_construct values
+#   summarise(unique_times = n_distinct(estimated_time_to_construct[estimated_time_to_construct != 0]), .groups = #"drop") %>%
+#   # Filter to find groups where there is more than one unique estimated_time_to_construct
+#   filter(unique_times > 1) %>%
+#   # Extract the q_ids
+#   pull(q_id)
+# 
+# # Display the q_ids with inconsistent estimated times to construct
+# print("q_ids with inconsistent estimated times to construct within each type of upgrade:")
+# print(inconsistent_time_to_construct)
+# 
+# # View the relevant rows for these q_ids
+# inconsistent_qid_rows <- data %>%
+#   filter(q_id %in% inconsistent_time_to_construct)
+#   
+#   
+# #Deinflating escalated costs
+# 
+# data2 <- data %>%
+#  
+#   filter(!grepl("-", estimated_time_to_construct)) %>%
+#   
+#  
+#   mutate(estimated_time_to_construct = as.numeric(estimated_time_to_construct)) %>%
+#   
+#   
+#   mutate(estimated_time_years = estimated_time_to_construct / 12) %>%
+#   
+#   
+#   mutate(
+#     roi = ifelse(
+#       estimated_cost_x_1000 > 0 & estimated_time_years > 0,
+#       (escalated_cost_x_1000 / estimated_cost_x_1000)^(1 / estimated_time_years) - 1,
+#       NA
+#     ),
+#   #   descalated_cost = ifelse(
+#   #    !is.na(roi),
+#   #    escalated_cost_x_1000 / ((1 + roi)^estimated_time_years),
+#   #    NA
+#   #  )
+#   )
+
+```
+
+
+
+
+```{r positive-costs, echo=FALSE}
+# Count the number of projects with positive cost estimates and cost allocation factors
+positive_costs <- scraped_itemized_data %>%
+  group_by(q_id) %>%
+  summarise(
+    positive_estimated_costs = sum(estimated_cost  > 0, na.rm = TRUE),
+    positive_escalated_costs = sum(escalated_cost > 0, na.rm = TRUE),
+    positive_cost_allocation_factor = sum(cost_allocation_factor > 0, na.rm = TRUE)
+  ) %>%
+  summarise(
+    positive_estimated_costs = sum(positive_estimated_costs > 0),
+    positive_escalated_costs = sum(positive_escalated_costs > 0),
+    
+    positive_cost_allocation_factor = sum(positive_cost_allocation_factor > 0)
+  )
+
+knitr::kable(positive_costs, caption = "Number of q_ids with Positive Cost Estimates and Cost Allocation Factors")
+```
+```{r creating phase 1 costs,  echo=FALSE, results='hide'}
+
+
+cols_to_drop <- c("network_upgrade_type", "upgrade_classification", "adnu_cost_rate_escalated_x_1000")
+  scraped_itemized_data  <-  scraped_itemized_data  %>% select(-one_of(cols_to_drop))
+  
+ scraped_total_data  <-  scraped_total_data  %>% select(-one_of(cols_to_drop))
+ scraped_total_data <- scraped_total_data %>%
+  # First, multiply cost columns by 1000 and rename type_of_upgrade if needed
+  mutate(
+    estimated_cost  = estimated_cost * 1000,
+    escalated_cost  = escalated_cost * 1000,
+    total_estimated_cost = total_estimated_cost*1000,
+    total_escalated_cost = total_escalated_cost*1000,
+    type_of_upgrade = if_else(type_of_upgrade == "PTO_IF", "POI", type_of_upgrade)
+  ) 
+ scraped_itemized_data <- scraped_itemized_data %>%
+  # First, multiply cost columns by 1000 and rename type_of_upgrade if needed
+  mutate(
+    estimated_cost  = estimated_cost * 1000,
+    escalated_cost  = escalated_cost * 1000,
+    total_estimated_cost = total_estimated_cost*1000,
+    total_escalated_cost = total_escalated_cost*1000,
+    type_of_upgrade = if_else(type_of_upgrade == "PTO_IF", "POI", type_of_upgrade)
+  ) %>%
+  # Group by q_id so that we can compute sums per q_id
+  group_by(q_id) %>%
+  mutate(
+    phase_1_total_POI_estimated_cost  = sum(estimated_cost[type_of_upgrade == "POI"], na.rm = TRUE),
+    phase_1_total_POI_escalated_cost  = sum(escalated_cost[type_of_upgrade == "POI"], na.rm = TRUE),
+    
+    phase_1_total_RNU_estimated_cost  = sum(estimated_cost[type_of_upgrade == "RNU"], na.rm = TRUE),
+    phase_1_total_RNU_escalated_cost  = sum(escalated_cost[type_of_upgrade == "RNU"], na.rm = TRUE),
+    
+    phase_1_total_LDNU_estimated_cost = sum(estimated_cost[type_of_upgrade == "LDNU"], na.rm = TRUE),
+    phase_1_total_LDNU_escalated_cost = sum(escalated_cost[type_of_upgrade == "LDNU"], na.rm = TRUE)
+  ) %>%
+  # Ungroup before adding network totals
+  ungroup() %>%
+  mutate(
+    phase_1_total_network_estimated_cost = phase_1_total_RNU_estimated_cost + phase_1_total_LDNU_estimated_cost,
+    phase_1_total_network_escalated_cost = phase_1_total_RNU_escalated_cost + phase_1_total_LDNU_escalated_cost,
+    phase_1_total_estimated_cost = phase_1_total_POI_estimated_cost + phase_1_total_network_estimated_cost,
+    phase_1_total_POI_escalated_cost= phase_1_total_POI_escalated_cost + phase_1_total_network_escalated_cost
+  )
+
+
+
+```
+
+
+
+# SUMMARY STATs
+
+```{r summary-statistics, echo=FALSE}
+# Summary statistics for each type of upgrade
+summary_statistics <- scraped_itemized_data %>%
+  group_by(type_of_upgrade) %>%
+  summarise(
+    count = n(),
+    avg_estimated_cost = mean(estimated_cost , na.rm = TRUE),
+    
+    p25_estimated_cost = quantile(estimated_cost , 0.25, na.rm = TRUE),
+    median_estimated_cost = median(estimated_cost , na.rm = TRUE),
+    p75_estimated_cost = quantile(estimated_cost , 0.75, na.rm = TRUE),
+    
+    avg_escalated_cost = mean(escalated_cost , na.rm = TRUE),
+    p25_escalated_cost = quantile(escalated_cost , 0.25, na.rm = TRUE),
+    median_escalated_cost = median(escalated_cost , na.rm = TRUE),
+    p75_escalated_cost = quantile(escalated_cost , 0.75, na.rm = TRUE),
+ 
+  )
+# Transpose the summary statistics
+summary_statistics_long <- summary_statistics %>%
+  pivot_longer(-type_of_upgrade, names_to = "statistic", values_to = "value")
+
+summary_statistics_wide <- summary_statistics_long %>%
+  pivot_wider(names_from = type_of_upgrade, values_from = value)
+
+# Display the transposed summary statistics in the R Markdown output
+knitr::kable(summary_statistics_wide, caption = " Summary Statistics for Each Type of Upgrade")
+# Display summary statistics in the R Markdown output
+ 
+```
+```{r Summary Statistics for POI and Network Costs, echo=FALSE}
+
+ library(dplyr)
+library(tidyr)
+library(knitr)
+
+# (A) Create a deduplicated dataset at the q_id level
+# For each q_id, we assume the aggregated cost columns are identical across rows.
+unique_costs <- scraped_itemized_data %>%
+  group_by(q_id) %>%
+  summarise(
+    cluster = first(cluster),
+    phase_1_total_POI_estimated_cost    = first(phase_1_total_POI_estimated_cost),
+    phase_1_total_POI_escalated_cost    = first(phase_1_total_POI_escalated_cost),
+    phase_1_total_RNU_estimated_cost    = first(phase_1_total_RNU_estimated_cost),
+    phase_1_total_RNU_escalated_cost    = first(phase_1_total_RNU_escalated_cost),
+    phase_1_total_LDNU_estimated_cost   = first(phase_1_total_LDNU_estimated_cost),
+    phase_1_total_LDNU_escalated_cost   = first(phase_1_total_LDNU_escalated_cost)
+  ) %>%
+  # Compute network totals: if a q_id is missing RNU or LDNU, the sum returns 0
+  mutate(
+    phase_1_total_network_estimated_cost  = phase_1_total_RNU_estimated_cost + phase_1_total_LDNU_estimated_cost,
+    phase_1_total_network_escalated_cost  = phase_1_total_RNU_escalated_cost + phase_1_total_LDNU_escalated_cost,
+    phase_1_total_cost_estimated          = phase_1_total_POI_estimated_cost + phase_1_total_network_estimated_cost,
+    phase_1_total_cost_escalated          = phase_1_total_POI_escalated_cost + phase_1_total_network_escalated_cost
+  ) %>%
+  ungroup()
+
+# (B) Define a helper function to compute summary statistics by cluster.
+# It will compute: count, mean, 25th percentile, median, and 75th percentile.
+summarize_costs <- function(df, cost_var) {
+  df %>%
+    group_by(cluster) %>%
+    summarise(
+      count  = n(),
+      avg    = mean({{ cost_var }}, na.rm = TRUE),
+      p25    = quantile({{ cost_var }}, 0.25, na.rm = TRUE),
+      median = median({{ cost_var }}, na.rm = TRUE),
+      p75    = quantile({{ cost_var }}, 0.75, na.rm = TRUE)
+    ) %>%
+    ungroup()
+}
+
+# (C) Create six tables
+
+# 1. Table: By cluster, phase 1 POI estimated costs
+table_POI_estimated <- summarize_costs(unique_costs, phase_1_total_POI_estimated_cost)
+
+# 2. Table: By cluster, phase 1 POI escalated costs
+table_POI_escalated <- summarize_costs(unique_costs, phase_1_total_POI_escalated_cost)
+
+# 3. Table: By cluster, phase 1 network estimated costs
+table_network_estimated <- summarize_costs(unique_costs, phase_1_total_network_estimated_cost)
+
+# 4. Table: By cluster, phase 1 network escalated costs
+table_network_escalated <- summarize_costs(unique_costs, phase_1_total_network_escalated_cost)
+
+# 5. Table: By cluster, phase 1 total estimated costs
+table_total_estimated <- summarize_costs(unique_costs, phase_1_total_cost_estimated)
+
+# 6. Table: By cluster, phase 1 total escalated costs
+table_total_escalated <- summarize_costs(unique_costs, phase_1_total_cost_escalated)
+
+# (D) Display each table using knitr::kable
+
+knitr::kable(table_POI_estimated, caption = "By Cluster: Phase 1 POI Estimated Costs")
+knitr::kable(table_POI_escalated, caption = "By Cluster: Phase 1 POI Escalated Costs")
+knitr::kable(table_network_estimated, caption = "By Cluster: Phase 1 Network Estimated Costs")
+knitr::kable(table_network_escalated, caption = "By Cluster: Phase 1 Network Escalated Costs")
+knitr::kable(table_total_estimated, caption = "By Cluster: Phase 1 Total Estimated Costs")
+knitr::kable(table_total_escalated, caption = "By Cluster: Phase 1 Total Escalated Costs")
+
+
+
+
+```
+
+
+```{r frequency-tables,echo=FALSE}
+# Create a new variable to categorize cost_allocation_factor into decile bins
+ # Group 'cost_allocation_factor' into defined bins and create a new variable 'cost_allocation_bin'
+library(dplyr)
+library(tidyr)
+library(knitr)
+
+# Step 1: Categorize 'cost_allocation_factor' into decile bins
+scraped_itemized_data <- scraped_itemized_data %>%
+  mutate(cost_allocation_bin = cut(
+    cost_allocation_factor,
+    breaks = seq(0, 100, by = 10),
+    include.lowest = TRUE,
+    labels = c("0-10", "10-20", "20-30", "30-40", "40-50", "50-60", "60-70", "70-80", "80-90", "90-100")
+  ))
+
+# Step 1: Group frequencies by 'type_of_upgrade' and 'cost_allocation_bin'
+cost_allocation_frequency <- scraped_itemized_data %>%
+  group_by(type_of_upgrade, cost_allocation_bin) %>%
+  summarise(count = n(), .groups = "drop") %>%
+  arrange(count, type_of_upgrade, cost_allocation_bin)  # Sort by 'count' in ascending order
+
+# Display the frequency table for cost allocation bins
+knitr::kable(
+  cost_allocation_frequency,
+  caption = "Frequencies of Cost Allocation Factors by Type of Upgrade (Sorted by Count)"
+)
+
+# # Step 2: Create a frequency table for the number of unique q_id per upgrade
+# unique_qid_per_upgrade <- data %>%
+#   group_by(upgrade) %>%
+#   summarise(no_of_unique_qid = n_distinct(q_id), .groups = "drop") %>%
+#   arrange(no_of_unique_qid, upgrade)  # Sort by 'no_of_unique_qid' in ascending order
+# 
+# knitr::kable(
+#   unique_qid_per_upgrade,
+#   caption = "Number of Unique q_id Per Upgrade (Sorted by Count)"
+# )
+
+# Step 3: Create a frequency table of upgrades with count and number of unique projects
+frequency_table <- scraped_itemized_data %>%
+  group_by(upgrade) %>%
+  summarise(
+    count = n(),  # Total number of times the upgrade is seen in the dataset
+    no_of_projects = n_distinct(q_id),  # Number of unique q_id associated with the upgrade
+    .groups = "drop"
+  ) %>%
+  arrange(count, no_of_projects, upgrade)  # Sort by 'count' and 'no_of_projects' in ascending order
+
+# Display the frequency table of upgrades
+#knitr::kable(
+#  frequency_table,
+#  caption = "Frequency Table of Upgrades: Total occurence and number of projects per unique upgrade"
+#)
+
+# Step 1: Count the number of unique upgrades per project
+project_unique_upgrades <- scraped_itemized_data %>%
+  group_by(q_id) %>%
+  summarise(
+    unique_upgrades = n_distinct(upgrade),  # Count unique upgrades per project
+    .groups = "drop"
+  )
+
+# Step 2: Define bin intervals and labels
+bin_breaks <- seq(0, max(project_unique_upgrades$unique_upgrades, na.rm = TRUE) + 10, by = 10)
+bin_labels <- paste0(bin_breaks[-length(bin_breaks)], "-", bin_breaks[-1])  # Create labels dynamically
+
+# Step 3: Bin the projects based on their unique upgrade counts
+binned_projects <- project_unique_upgrades %>%
+  mutate(
+    upgrade_count = cut(
+      unique_upgrades,
+      breaks = bin_breaks,
+      include.lowest = TRUE,
+      labels = bin_labels
+    )
+  ) %>%
+  group_by(upgrade_count) %>%
+  summarise(
+    no_of_projects = n(),  # Count the number of projects in each bin
+    .groups = "drop"
+  ) %>%
+  arrange(upgrade_count)
+
+# Step 4: Display the binned frequency table
+knitr::kable(
+  binned_projects,
+  caption = "Frequency Table: Number of Projects with Unique Upgrade"
+)
+
+
+
+
+# Step 4: Create a frequency table of upgrades with count and number of unique projects
+frequency_table <- scraped_itemized_data %>%
+  group_by(upgrade) %>%
+  summarise(
+    count = n(),  # Total number of times the upgrade is seen in the dataset
+    no_of_projects = n_distinct(q_id),  # Number of unique q_id associated with the upgrade
+    .groups = "drop"
+  ) %>%
+  filter(no_of_projects > 10) %>%  # Filter for upgrades with more than one unique q_id
+  arrange(count, no_of_projects, upgrade)  # Sort by 'count' and 'no_of_projects' in ascending order
+ 
+
+```
+
+
+
+```{r deinflating escalated costs with projects having both est and esc costs,  echo=FALSE, results='hide'} 
+library(dplyr)
+library(stringr)
+library(purrr)
+library(ggplot2)
+
+# Step 1: Clean Estimated Time to Construct and Extract Maximum Construction Time
+scraped_itemized_data2 <- scraped_itemized_data %>%
+  # Extract numeric values from estimated_time_to_construct, handling ranges properly
+  mutate(estimated_time_to_construct_cleaned = str_extract_all(estimated_time_to_construct, "\\d+")) %>%
+  # Convert extracted values to numeric and handle cases where there are multiple values (e.g., ranges)
+  mutate(estimated_time_to_construct_cleaned = map_dbl(estimated_time_to_construct_cleaned, ~ max(as.numeric(.), na.rm = TRUE))) %>%
+  # Group by q_id and type_of_upgrade to calculate the max construction time per group
+  group_by(q_id, type_of_upgrade) %>%
+  summarise(construction_time = max(estimated_time_to_construct_cleaned, na.rm = TRUE), .groups = "drop") %>%
+  # Add the construction_time to the original data for verification
+  right_join(scraped_itemized_data, by = c("q_id", "type_of_upgrade")) %>%
+  # Place construction_time next to estimated_time_to_construct for easy comparison
+  relocate(construction_time, .after = estimated_time_to_construct)
+
+# Step 2: Add Construction Time to Total Dataset and Calculate Estimated Years
+# Summarize the construction time for each type_of_upgrade and q_id
+construction_time_summary <- scraped_itemized_data2 %>%
+  group_by(q_id, type_of_upgrade) %>%
+  summarise(construction_time = max(construction_time, na.rm = TRUE), .groups = "drop")
+
+# Join the summarized construction time to the total dataset
+scraped_total_data2 <- scraped_total_data %>%
+  left_join(construction_time_summary, by = c("q_id", "type_of_upgrade")) %>%
+  mutate(estimated_years = construction_time / 12) %>%
+  mutate(roi = ifelse(estimated_cost > 0 & estimated_years > 0,
+                      (escalated_cost / estimated_cost)^(1 / estimated_years) - 1,
+                      NA))
+
+
+# # left join Every combination of q_id and type_of_upgrade in data2 will remain in the final dataset.
+# Additional data from total2 (like ROI) will be included where matches exist.
+# If no match is found, the new columns from total2 will be filled with NA
+# Step 3: Add ROI Back to Original Dataset and Calculate Descalated Costs
+scraped_itemized_data2 <- scraped_itemized_data2 %>%
+  left_join(
+    scraped_total_data2 %>% select(q_id, type_of_upgrade, roi), 
+    by = c("q_id", "type_of_upgrade"), 
+    relationship = "many-to-many" # Specify explicitly, if required
+  ) %>%
+  mutate(
+    descalated_cost = ifelse(
+      !is.na(roi),
+      escalated_cost / ((1 + roi)^(construction_time / 12)),
+      NA
+    )
+  ) %>%
+  relocate(roi, descalated_cost, .after = estimated_cost)
+
+
+# Step 4: Plot Scatter Plot of Estimated Cost vs. Descalated Cost
+scatter_plot <- ggplot(scraped_itemized_data2, aes(x = estimated_cost, y = descalated_cost)) +
+  geom_point(color = "blue") +
+  geom_abline(intercept = 0, slope = 1, linetype = "dashed", color = "red") +
+  theme_minimal() +
+  labs(title = "Scatter Plot of Estimated Costs vs. Descalated Costs",
+       x = "Estimated Cost",
+       y = "Descalated Cost") +
+  scale_x_continuous(labels = scales::comma) +
+  scale_y_continuous(labels = scales::comma)
+
+# Print the scatter plot for visualization
+scatter_plot
+
+options(scipen = 999)
+
+# Step 5: Identify Outliers
+outliers <- scraped_itemized_data2 %>%
+  filter(abs(estimated_cost - descalated_cost) >= 9000)
+
+# Print the outliers to see the details
+#print(outliers)
+
+# Add explanation for the analysis
+print("Calculated the max estimated time to construct for each type of upgrade. Used this time variable to calculate the rate of interest for total cost data (not itemized), then applied the calculated ROI to deinflate costs in the itemized data.")
+
+```
+
+
+
+# Deinflating all costs:
+#Rule: If a q_id has both est and esc costs, deinflate as above,
+# If only esc costs, as roi dist is not a point mass, use the following allocation rule:
+#1. Within cluster,type of upgrade, match the q_id with the same time to construct, use the corresponding roi
+#2. If no such match exists, allow time matching across type of upgrades within the cluster
+#3. If no such match exists as well, take an avg of the roi, within cluster, type of upgrade.
+
+```{r deinflating all escalated costs, echo=FALSE,  results='hide', warning=FALSE}
+scraped_itemized_data2 <- scraped_itemized_data2 %>%
+  mutate(
+    roi = ifelse(
+      estimated_cost > 0 & construction_time > 0,
+      (escalated_cost / estimated_cost)^(1 / (construction_time / 12)) - 1,
+      NA
+    )
+  )
+
+# Step 2: Fill ROI for q_ids with only escalated costs
+scraped_itemized_data2 <- scraped_itemized_data2 %>%
+  group_by(cluster) %>%
+  mutate(
+    roi = ifelse(
+      is.na(roi) & escalated_cost > 0 & estimated_cost == 0,
+      
+      # Prefer ROI with the same construction time and same type of upgrade
+      ifelse(
+        any(!is.na(roi) & construction_time == construction_time & type_of_upgrade == type_of_upgrade),
+        roi[!is.na(roi) & construction_time == construction_time & type_of_upgrade == type_of_upgrade][1],
+        
+        # If not found, find ROI with the same construction time, any type of upgrade
+        ifelse(
+          any(!is.na(roi) & construction_time == construction_time),
+          roi[!is.na(roi) & construction_time == construction_time][1],
+          
+          # If neither available, use average ROI for the type of upgrade within the cluster
+          mean(roi[!is.na(roi) & type_of_upgrade == type_of_upgrade], na.rm = TRUE)
+        )
+      ),
+      
+      roi
+    )
+  ) %>%
+  ungroup()
+
+# Step 3: Calculate descalated costs again based on the filled ROI values
+scraped_itemized_data2 <- scraped_itemized_data2 %>%
+  mutate(
+    descalated_cost = ifelse(
+      !is.na(roi) & escalated_cost > 0,
+      escalated_cost / ((1 + roi)^(construction_time / 12)),
+      NA
+    )
+  )
+
+scraped_itemized_data2 <- scraped_itemized_data2 %>%
+  mutate(
+    total_descalated_cost = ifelse(
+      !is.na(roi) & total_escalated_cost > 0,
+      total_escalated_cost / ((1 + roi)^(construction_time / 12)),
+      NA
+    )
+  )
+
+
+
+#same for the total dataset:
+
+
+# Step 4: Plot Scatter Plot of Estimated Cost vs. Descalated Cost
+scatter_plot <- ggplot(scraped_itemized_data2, aes(x = estimated_cost, y = descalated_cost)) +
+  geom_point(color = "blue") +
+  geom_abline(intercept = 0, slope = 1, linetype = "dashed", color = "red") +
+  theme_minimal() +
+  labs(title = "Scatter Plot of Estimated Costs vs. Descalated Costs",
+       x = "Estimated Cost",
+       y = "Descalated Cost") +
+  scale_x_continuous(labels = scales::comma) +
+  scale_y_continuous(labels = scales::comma)
+
+# Print the scatter plot for visualization
+scatter_plot
+
+options(scipen = 999)
+
+# Step 5: Identify Outliers
+outliers <- scraped_itemized_data2 %>%
+  filter(abs(estimated_cost - descalated_cost) >= 9000)
+
+# Print the outliers to see the details
+#print(outliers)
+
+ 
+
+```
+
+
+
+#Merging the deinflated costs and estimated costs to have one unified cost column.
+```{r merging cost,  results='hide'}
+# Step 1: Merge estimated_cost and descalated_cost columns
+scraped_itemized_data2 <- scraped_itemized_data2 %>%
+  mutate(
+    estimated_cost = ifelse(
+      is.na(estimated_cost) | estimated_cost == 0,
+      descalated_cost,
+      estimated_cost
+    ),
+    
+      total_estimated_cost = ifelse(
+      is.na(total_estimated_cost) | total_estimated_cost == 0,
+      total_descalated_cost,
+      total_estimated_cost
+    
+  ))
+
+# Step 2: Drop specified columns
+scraped_itemized_data2 <- scraped_itemized_data2 %>%
+  select(-c(escalated_cost, descalated_cost,total_escalated_cost, total_descalated_cost))
+
+# Step 3: Replace any NA in the newly constructed estimated_cost column with zero
+scraped_itemized_data2 <- scraped_itemized_data2 %>%
+  mutate(estimated_cost = replace_na(estimated_cost, 0),
+  total_estimated_cost = replace_na(total_estimated_cost,0))
+
+ 
+```
+
+```{r, calculating POI and Network costs using descalated costs, echo=FALSE,  results='hide'}
+  # Group by q_id so that we can compute sums per q_id
+scraped_itemized_data2 <- scraped_itemized_data2 %>%  
+group_by(q_id) %>%
+  mutate(
+    phase_1_total_POI_cost  = sum(estimated_cost[type_of_upgrade == "POI"], na.rm = TRUE),
+    
+    phase_1_total_RNU_cost  = sum(estimated_cost[type_of_upgrade == "RNU"], na.rm = TRUE),
+    
+    
+    phase_1_total_LDNU_cost = sum(estimated_cost[type_of_upgrade == "LDNU"], na.rm = TRUE),
+    
+  ) %>%
+  # Ungroup before adding network totals
+  ungroup() %>%
+  mutate(
+    phase_1_total_network_cost = phase_1_total_RNU_cost + phase_1_total_LDNU_cost,
+ 
+    phase_1_total_cost = phase_1_total_POI_cost + phase_1_total_network_cost
+ 
+  )
+
+
+
+```
+
+
+# Cost_ data 
+```{r cost_data,  echo=FALSE,  results='hide'}
+
+
+cost_data <- scraped_itemized_data %>%
+  mutate(cost_factor = cost_allocation_factor / 100) %>%
+  group_by(q_id, type_of_upgrade, upgrade) %>%
+  mutate(cost_total = (estimated_cost) / (cost_factor), na.rm = TRUE) %>%
+  mutate(cost_own = cost_total * cost_factor) %>%
+  ungroup() %>%
+  # Replace NaN values with zero in cost_total and cost_own
+  mutate(
+    cost_total = if_else(is.na(cost_total), 0, cost_total),
+    cost_own = if_else(is.na(cost_own), 0, cost_own)
+  ) %>%
+  # Step 4: Rearrange columns for better readability
+  select(q_id, type_of_upgrade, cluster, req_deliverability, latitude, longitude, capacity, point_of_interconnection, item, upgrade, description, cost_total, cost_factor, cost_own, cost_allocation_factor, everything())
+# Step 1: Calculate cost_total by aggregating costs within each upgrade group
+cost_data2 <- scraped_itemized_data2 %>%
+  mutate(cost_factor = cost_allocation_factor / 100) %>%
+  group_by(q_id, type_of_upgrade, upgrade) %>%
+  mutate(cost_total = (estimated_cost) / (cost_factor), na.rm = TRUE) %>%
+  mutate(cost_own = cost_total * cost_factor) %>%
+  ungroup() %>%
+  # Replace NaN values with zero in cost_total and cost_own
+  mutate(
+    cost_total = if_else(is.na(cost_total), 0, cost_total),
+    cost_own = if_else(is.na(cost_own), 0, cost_own)
+  ) %>%
+  # Step 4: Rearrange columns for better readability
+  select(q_id, type_of_upgrade, cluster, req_deliverability, latitude, longitude, capacity, point_of_interconnection, item, upgrade, description, cost_total, cost_factor, cost_own, cost_allocation_factor, everything())
+
+
+ 
+
+ 
+
+
+
+cost_factor_summary <- cost_data2 %>%
+  group_by(construction_time) %>%
+  summarise(average_cost_factor = mean(cost_factor, na.rm = TRUE)) %>%
+  arrange(construction_time)
+
+
+
+
+# Plot a line graph of cost factor by estimated construction time
+cost_factor_line_plot <- ggplot(cost_factor_summary, aes(x = construction_time, y = average_cost_factor)) +
+  geom_line(color = "blue", size = 1) +
+  geom_point(color = "red", size = 1.5) +
+  theme_minimal() +
+  labs(title = "Average Cost Allocation Factor by Estimated Time to Construct",
+       x = "Estimated Time to Construct (Months)",
+       y = "Average Cost Factor (as a Proportion)") +
+  scale_y_continuous(labels = scales::percent) +
+  scale_x_continuous(labels = scales::comma)
+
+print(cost_factor_line_plot)
+
+
+
+# Aggregate the data by cluster
+cost_factor_summary_cluster <- cost_data2 %>%
+  group_by(cluster) %>%
+  summarise(average_cost_factor = mean(cost_factor, na.rm = TRUE)) %>%
+  arrange(cluster)
+
+
+
+
+
+# Plot a line graph of cost factor by cluster (using cluster as a discrete variable)
+cost_factor_line_plot_cluster <- ggplot(cost_factor_summary_cluster, aes(x = as.factor(cluster), y = average_cost_factor, group = 1)) +
+  geom_line(color = "blue", size = 1) +
+  geom_point(color = "red", size = 1.5) +
+  theme_minimal() +
+  labs(title = "Average Cost Allocation Factor by Cluster",
+       x = "Cluster",
+       y = "Average Cost Factor (as a Proportion)") +
+  scale_y_continuous(labels = scales::percent)
+
+# Display the plot
+print(cost_factor_line_plot_cluster)
+
+
+
+# Ensure construction_time is numeric for plotting
+cost_data2 <- cost_data2 %>%
+  mutate(construction_time = as.numeric(construction_time))
+
+# Aggregate data to calculate the average construction time per cluster
+avg_construction_time_summary <- cost_data2 %>%
+  group_by(cluster) %>%
+  summarise(average_construction_time = mean(construction_time, na.rm = TRUE)) %>%
+  arrange(cluster)
+
+# Plot a line graph of average construction time by cluster
+avg_construction_time_plot <- ggplot(avg_construction_time_summary, aes(x = factor(cluster), y = average_construction_time, group = 1)) +
+  geom_line(color = "blue", size = 1) +
+  geom_point(color = "red", size = 2) +
+  theme_minimal() +
+  labs(title = "Average Construction Time by Cluster",
+       x = "Cluster",
+       y = "Average Construction Time (Months)")
+
+# Display the plot
+print(avg_construction_time_plot)
+
+
+
+# cost_factor_by_time_plot <- ggplot(cost_data2, aes(x = construction_time, y = cost_factor)) +
+#   geom_point(alpha = 0.7, color = "darkgreen") +
+#   geom_smooth(method = "lm", color = "blue", se = FALSE) +  # Add a trend line
+#   theme_minimal() +
+#   labs(title = "Cost Allocation Factor by Estimated Time to Construct",
+#        x = "Estimated Time to Construct (Months)",
+#        y = "Cost Factor (as a Proportion)") 
+#   #scale_y_continuous(labels = scales::percent)
+
+# Display the plot
+#print(cost_factor_by_time_plot)
+
+ 
+
+```
+
+
+
+
+
+
+
+# Note estimate costs are in 1000's of $, adnu cost is cost per MW.
+
+
+
+```{r summary_statistics_by_upgrade, echo= FALSE, results='hide'}
+ 
+
+
+
+summary_statistics_by_qid_upgrade <- scraped_itemized_data %>%
+  group_by( q_id, type_of_upgrade) %>%
+  summarise(
+    avg_estimated_cost = mean(estimated_cost, na.rm = TRUE),
+    avg_escalated_cost = mean(escalated_cost, na.rm = TRUE),
+    avg_cost_allocation_factor = mean(cost_allocation_factor, na.rm = TRUE)
+  )
+
+knitr::kable(summary_statistics_by_qid_upgrade, caption = "Summary Statistics by Each Type of Upgrade for Each q_id")
+
+
+
+
+
+
+
+duplicate_check <- scraped_itemized_data %>%
+  filter(type_of_upgrade == "ADNU") %>%
+  group_by(q_id) %>%
+  summarise(count = n()) %>%
+  filter(count > 1)
+
+nrow(duplicate_check)  # This will show how many q_ids have multiple entries.
+
+
+```
+
+
+
+
+
+
+
+
+
+
+
+# ```{r outliers}
+# # Identify q_ids that are outliers
+# outliers <- data %>%
+#   filter(estimated_cost_x_1000 > quantile(estimated_cost_x_1000, 0.99, na.rm = TRUE) |
+#            estimated_cost_x_1000 < quantile(estimated_cost_x_1000, 0.01, na.rm = TRUE)) %>%
+#   select(q_id, estimated_cost_x_1000)
+# 
+# knitr::kable(outliers, caption = "Outlier q_ids Based on Estimated Costs")
+# ```
+
+
+
+
+```{r distribution-plots, fig.height=6, fig.width=8,  echo=FALSE, results='hide'}
+# Plot distribution of estimated costs, escalated costs, and ADNU costs
+output_dir <- paste0(project_root, "/output/pdf_scraper/plots")
+
+# Create the output directory if it doesn't exist
+if (!dir.exists(output_dir)) {
+  dir.create(output_dir, recursive = TRUE)
+}
+
+# Generate and save distribution plots
+cost_distribution_plots <- list(
+  ggplot(scraped_itemized_data %>% group_by(q_id) %>% summarise(estimated_cost  = mean(estimated_cost )), aes(x = estimated_cost )) +
+    geom_histogram(bins = 30, fill = "blue", color = "black", alpha = 0.7) +
+    theme_minimal() +
+    labs(title = "Distribution of Estimated Costs", x = "Estimated Cost ($1000)", y = "Count of q_id") +
+    scale_x_continuous(labels = scales::comma),
+  
+  ggplot(scraped_itemized_data %>% group_by(q_id) %>% summarise(escalated_cost = mean(escalated_cost )), aes(x = escalated_cost )) +
+    geom_histogram(bins = 30, fill = "red", color = "black", alpha = 0.7) +
+    theme_minimal() +
+    labs(title = "Distribution of Escalated Costs", x = "Escalated Cost ($1000)", y = "Count of q_id") +
+    scale_x_continuous(labels = scales::comma)
+  
+  # ggplot(data %>% group_by(q_id) %>% summarise(adnu_cost_rate  = mean(adnu_cost_rate )), aes(x = adnu_cost_rate)) +
+  #   geom_histogram(bins = 30, fill = "green", color = "black", alpha = 0.7) +
+  #   theme_minimal() +
+  #   labs(title = "Distribution of ADNU Costs", x = "ADNU Cost Rate ($1000)", y = "Count of q_id") +
+  #   scale_x_continuous(labels = scales::comma)
+)
+
+plot_names <- c(
+  "distribution_of_estimated_costs.png",
+  "distribution_of_escalated_costs.png"
+  
+)
+
+for (i in seq_along(cost_distribution_plots)) {
+  plot <- cost_distribution_plots[[i]]
+  plot_name <- plot_names[i]
+  ggsave(filename = paste0(output_dir, "/", plot_name), plot = plot, width = 8, height = 6)
+  print(plot)
+}
+
+
+
+
+
+
+ 
+
+# Generate and save distribution plots with zoomed-in bins near zero and count labels on bars
+cost_distribution_plots <- list(
+  ggplot(scraped_itemized_data %>% group_by(q_id) %>% summarise(estimated_cost  = mean(estimated_cost )), aes(x = estimated_cost)) +
+    geom_histogram(breaks = seq(0, 100000, by = 5000), fill = "blue", color = "black", alpha = 0.7) +
+    stat_bin(breaks = seq(0, 100000, by = 5000), geom = "text", aes(label = ..count..), vjust = -0.5, color = "black") +
+    theme_minimal() +
+    labs(title = " Zoomed-In Distribution of Estimated Costs ", x = "Estimated Cost ($1000)", y = "Count of q_id") +
+    scale_x_continuous(labels = scales::comma, limits = c(0, 100000)),
+  
+  ggplot(scraped_itemized_data %>% group_by(q_id) %>% summarise(escalated_cost  = mean(escalated_cost )), aes(x = escalated_cost )) +
+    geom_histogram(breaks = seq(0, 100000, by = 5000), fill = "red", color = "black", alpha = 0.7) +
+    stat_bin(breaks = seq(0, 100000, by = 5000), geom = "text", aes(label = ..count..), vjust = -0.5, color = "black") +
+    theme_minimal() +
+    labs(title = "Zoomed-In Distribution of Escalated Costs", x = "Escalated Cost ($1000)", y = "Count of q_id") +
+    scale_x_continuous(labels = scales::comma, limits = c(0, 100000))
+  
+  # ggplot(data %>% group_by(q_id) %>% summarise(adnu_cost_rate  = mean(adnu_cost_rate )), aes(x = adnu_cost_rate )) +
+  #   geom_histogram(breaks = seq(0, 1000, by = 50), fill = "green", color = "black", alpha = 0.7) +
+  #   stat_bin(breaks = seq(0, 1000, by = 50), geom = "text", aes(label = ..count..), vjust = -0.5, color = "black") +
+  #   theme_minimal() +
+  #   labs(title = "Zoomed-In Distribution of ADNU Costs", x = "ADNU Cost Rate ($1000)", y = "Count of q_id") +
+  #   scale_x_continuous(labels = scales::comma, limits = c(0, 1000))
+)
+
+plot_names <- c(
+  "zoomed_distribution_of_estimated_costs_with_counts.png",
+  "zoomed_distribution_of_escalated_costs_with_counts.png"
+)
+
+# Save and print the zoomed-in distribution plots with counts on bars
+for (i in seq_along(cost_distribution_plots)) {
+  plot <- cost_distribution_plots[[i]]
+  plot_name <- plot_names[i]
+  ggsave(filename = paste0(output_dir, "/", plot_name), plot = plot, width = 8, height = 6)
+  print(plot)
+}
+
+```
+
+
+
+
+total_estimated_cost_mutate <- data %>%
+  group_by(q_id) %>%  # Group by q_id
+  mutate(
+    total_estimated_cost = sum(estimated_cost, na.rm = TRUE)  # Calculate sum within each group
+  ) %>%
+  ungroup()  # Remove grouping
+  
+  
+  
+  
+  
+
+```{r Shared cost tables, echo=FALSE, results='hide'}
+ 
+# Shared Cost Table (Original)
+shared_cost_table <- scraped_itemized_data %>%
+  group_by(q_id, cluster) %>%
+  summarise(
+    #has_shared_cost_numeric = max(as.numeric(cost_allocation_factor > 0 & cost_allocation_factor < 100), na.rm = TRUE),  # Numeric indicator for any shared cost
+    cost_allocation_indicator = ifelse(cost_allocation_factor > 0 & cost_allocation_factor < 100, 1, 0),
+    total_estimated_cost_shared = sum(estimated_cost * cost_allocation_indicator, na.rm = TRUE),  # Sum of estimated costs for shared upgrades
+    total_escalated_cost_shared = sum(escalated_cost * cost_allocation_indicator, na.rm = TRUE),  # Sum of escalated costs for shared upgrades
+    total_estimated_cost = sum(estimated_cost, na.rm = TRUE),  # Total estimated cost of all upgrades
+    total_escalated_cost = sum(escalated_cost, na.rm = TRUE),  # Total escalated cost of all upgrades
+    shared_estimated_cost_share = ifelse(total_estimated_cost > 0, total_estimated_cost_shared / total_estimated_cost, NA),  # Fraction of shared estimated cost
+    shared_escalated_cost_share = ifelse(total_escalated_cost > 0, total_escalated_cost_shared / total_escalated_cost, NA),  # Fraction of shared escalated cost
+  #  has_shared_cost = ifelse(has_shared_cost_numeric == 1, "Yes", "No"),  # Convert shared cost indicator to Yes/No
+    .groups = "drop"  # Explicitly drop grouping after summarization
+  )%>%
+  mutate(
+   has_shared_cost = ifelse(cost_allocation_indicator == 1, "Yes", "No")  # Convert shared cost indicator to Yes/No
+  ) %>%
+  rename(
+    #`Q ID` = q_id,
+    `cluster` = cluster,
+     
+    `Has Shared Cost` = has_shared_cost,
+    `Total Estimated Cost Shared` = total_estimated_cost_shared,
+    `Total Escalated Cost Shared` = total_escalated_cost_shared,
+    `Total Estimated Cost` = total_estimated_cost,
+    `Total Escalated Cost` = total_escalated_cost,
+    `Shared Estimated Cost Share` = shared_estimated_cost_share,
+    `Shared Escalated Cost Share` = shared_escalated_cost_share
+  )
+
+# Display the shared cost table in R Markdown output
+knitr::kable(shared_cost_table, caption = "Project-Level Shared Cost Indicator and Shared Cost Shares for Estimated and Escalated Costs")
+
+# Filtered Shared Cost Table
+shared_cost_table_filtered <- shared_cost_table %>%
+  filter(`Has Shared Cost` == "Yes")
+
+# Display the filtered shared cost table in R Markdown
+knitr::kable(shared_cost_table_filtered, caption = "Projects with Shared Costs - Summary Table")
+
+# Shared Cost Table Version 2 (Using descalated)
+shared_cost_table_v2 <- scraped_itemized_data2 %>%
+  group_by(q_id, cluster) %>%
+  summarise(
+     cost_allocation_indicator = ifelse(cost_allocation_factor > 0 & cost_allocation_factor < 100, 1, 0),
+    total_estimated_cost_shared = sum(estimated_cost * cost_allocation_indicator, na.rm = TRUE),  # Sum of estimated costs for shared upgrades
+      
+    total_estimated_cost = sum(estimated_cost, na.rm = TRUE),  # Total estimated cost of all upgrades
+     
+    shared_estimated_cost_share = ifelse(total_estimated_cost > 0, total_estimated_cost_shared / total_estimated_cost, NA),  # Fraction of shared estimated cost
+    .groups = "drop"  # Explicitly drop grouping after summarization
+  ) %>%
+  mutate(
+    has_shared_cost = ifelse(cost_allocation_indicator == 1, "Yes", "No")  # Convert shared cost indicator to Yes/No
+  ) %>%
+  rename(
+    #`Q ID` = q_id,
+    `Cluster` = cluster,
+    `Has Shared Cost` = has_shared_cost,
+    `Total Estimated Cost Shared` = total_estimated_cost_shared,
+    `Total Estimated Cost` = total_estimated_cost,
+    `Shared Estimated Cost Share` = shared_estimated_cost_share
+  )
+
+# Display the shared cost table Version 2 in R Markdown
+knitr::kable(shared_cost_table_v2, caption = ":Project-Level Shared Cost Indicator and Shared Cost Shares for De-escalated Costs")
+
+# Filtered Shared Cost Table Version 2
+shared_cost_table_v2_filtered <- shared_cost_table_v2 %>%
+  filter(`Has Shared Cost` == "Yes")
+
+# Display the filtered version of the shared cost table in R Markdown
+knitr::kable(shared_cost_table_v2_filtered, caption = "Projects with Shared Costs - Summary Table (De-escalated costs)")
+
+# Shared Cost Distribution (Percentiles)
+shared_cost_distribution <- shared_cost_table %>%
+  filter(!is.na(`Shared Estimated Cost Share`) & !is.na(`Shared Escalated Cost Share`)) %>%
+  summarise(
+    min_shared_estimated_cost_share = min(`Shared Estimated Cost Share`, na.rm = TRUE),
+    p25_shared_estimated_cost_share = quantile(`Shared Estimated Cost Share`, 0.25, na.rm = TRUE),
+    median_shared_estimated_cost_share = median(`Shared Estimated Cost Share`, na.rm = TRUE),
+    p75_shared_estimated_cost_share = quantile(`Shared Estimated Cost Share`, 0.75, na.rm = TRUE),
+    max_shared_estimated_cost_share = max(`Shared Estimated Cost Share`, na.rm = TRUE),
+    mean_shared_estimated_cost_share = mean(`Shared Estimated Cost Share`, na.rm = TRUE),
+    
+    min_shared_escalated_cost_share = min(`Shared Escalated Cost Share`, na.rm = TRUE),
+    p25_shared_escalated_cost_share = quantile(`Shared Escalated Cost Share`, 0.25, na.rm = TRUE),
+    median_shared_escalated_cost_share = median(`Shared Escalated Cost Share`, na.rm = TRUE),
+    p75_shared_escalated_cost_share = quantile(`Shared Escalated Cost Share`, 0.75, na.rm = TRUE),
+    max_shared_escalated_cost_share = max(`Shared Escalated Cost Share`, na.rm = TRUE),
+    mean_shared_escalated_cost_share = mean(`Shared Escalated Cost Share`, na.rm = TRUE),
+    .groups = "drop"  # Explicitly drop grouping
+  ) %>%
+  t() %>%  # Transpose the table
+  as.data.frame() %>%
+  rownames_to_column(var = "Statistic") %>%
+  rename(Value = V1)
+
+# Display the transposed shared cost distribution in R Markdown output
+knitr::kable(shared_cost_distribution, caption = "Transposed Distribution of Shared Cost Shares Across Projects for Estimated and Escalated Costs")
+
+
+
+
+
+ 
+
+
+
+
+
+```
+
+
+``` {r shared cost distribution-plots, fig.height=6, fig.width=8, echo=FALSE}
+# Set output directory
+# Output directory for plots
+# Calculate the mean cost share for each cluster
+mean_cost_shares <- shared_cost_table %>%
+  filter(!is.na(`Shared Estimated Cost Share`)) %>%
+  group_by(cluster) %>%
+  summarise(mean_cost_share = mean(`Shared Estimated Cost Share`, na.rm = TRUE))
+
+# Function to generate, save, and print plots for a specific cluster
+generate_cluster_plots <- function(cluster_id, shared_cost_table, mean_cost_shares) {
+  cluster_output_dir <- paste0(output_dir, "/Cluster_", cluster_id)
+  if (!dir.exists(cluster_output_dir)) {
+    dir.create(cluster_output_dir, recursive = TRUE)
+  }
+
+  # Filter data for the current cluster
+  cluster_data <- shared_cost_table %>%
+    filter(cluster == cluster_id) %>%
+    distinct(q_id, .keep_all = TRUE)  # Ensure unique Q ID counts
+
+  # Get the mean cost share for the current cluster
+  mean_cost <- mean_cost_shares %>%
+    filter(cluster == cluster_id) %>%
+    pull(mean_cost_share)
+
+  # Create shared estimated cost share plot with a red vertical line
+  estimated_plot <- ggplot(cluster_data %>% filter(!is.na(`Shared Estimated Cost Share`)), 
+                           aes(x = `Shared Estimated Cost Share`)) +
+    geom_histogram(aes(y = after_stat(count) / sum(after_stat(count))), 
+                   bins = 20, fill = "blue", color = "black", alpha = 0.9) +
+    geom_vline(xintercept = mean_cost, color = "red", linetype = "solid", size = 1) +  # Add red vertical line 
+    theme_minimal() +
+    labs(
+      title = paste("Cluster", cluster_id, "- Distribution of Shared Estimated Cost Shares"),
+      x = "Total Cost Shared with Another Project (%)",
+      y = "Frequency of Projects (%)"
+    ) +
+    scale_x_continuous(
+      labels = scales::percent,
+      breaks = seq(0, 1, by = 0.1),
+      limits = c(0, 1)  # Ensure x-axis goes from 0 to 100%
+    ) +
+    scale_y_continuous(labels = scales::percent)
+
+
+ 
+  # Save the plots for the cluster
+  ggsave(filename = paste0(cluster_output_dir, "/shared_estimated_cost_distribution_cluster_", cluster_id, ".png"), plot = estimated_plot, width = 6, height = 4, dpi = 300)
+ 
+
+  # Print the plots for visualization
+  print(estimated_plot)
+#  print(escalated_plot)
+}
+
+# Iterate over all unique clusters to generate, save, and print plots
+# Iterate over all unique clusters to generate, save, and print plots
+unique_clusters <-c(1,2,3,4,5,6,7,8,9,10,11,12,13,14)
+
+for (cluster_id in unique_clusters) {
+  cat("Generating plots for Cluster:", cluster_id, "\n")
+  generate_cluster_plots(cluster_id, shared_cost_table, mean_cost_shares)
+}
+
+# Prepare data for "All Clusters" plots
+all_cluster_data <- shared_cost_table %>%
+  distinct(q_id, .keep_all = TRUE)  # Ensure unique Q ID counts
+
+
+
+# Calculate the overall mean across all clusters
+overall_mean <- shared_cost_table %>%
+  filter(!is.na(`Shared Estimated Cost Share`)) %>%
+  summarise(mean_cost_share = mean(`Shared Estimated Cost Share`, na.rm = TRUE)) %>%
+  pull(mean_cost_share)
+
+cat("Overall mean shared estimated cost share:", overall_mean, "\n")
+
+# Generate the "All Clusters" plot with a red vertical line
+final_estimated_plot <- ggplot(all_cluster_data %>% filter(!is.na(`Shared Estimated Cost Share`)), 
+                               aes(x = `Shared Estimated Cost Share`)) +
+  geom_histogram(aes(y = after_stat(count) / sum(after_stat(count))), 
+                 bins = 20, fill = "blue", color = "black", alpha = 0.9) +
+  geom_vline(data = mean_cost_shares, aes(xintercept = overall_mean), color = "red", linetype = "solid", size = 1) +
+  theme_minimal() +
+  labs(
+    #title = "All Clusters - Distribution of Shared Estimated Cost Shares",
+    x = "Total Cost Shared with Another Project (%)",
+    y = "Frequency of Projects (%)"
+  ) +
+  scale_x_continuous(
+    labels = scales::percent,
+    breaks = seq(0, 1, by = 0.1),
+    limits = c(0, 1)  # Ensure x-axis goes from 0 to 100%
+  ) +
+  scale_y_continuous(labels = scales::percent, limits = c(0, 0.12))
+
+ 
+# Save and print the final plots for all clusters
+ggsave(filename = paste0(output_dir, "/shared_estimated_cost_distribution_all_clusters.png"), plot = final_estimated_plot, width = 6, height = 4, dpi = 300)
+ 
+
+# Print the final plots
+print(final_estimated_plot)
+ 
+
+```
+
+```{r cost dist panel, echo=FALSE, results='hide'}
+ # Prepare the data with precomputed frequencies
+library(dplyr)
+library(ggplot2)
+
+all_cluster_data <- shared_cost_table %>%
+  filter(!is.na(`Shared Estimated Cost Share`)) %>%
+  distinct(q_id, .keep_all = TRUE) %>%
+  group_by(cluster) %>%
+  mutate(
+    bin = cut(
+      `Shared Estimated Cost Share`, 
+      breaks = seq(0, 1, by = 0.1),  # Define bins (e.g., 5% increments)
+      include.lowest = TRUE
+    )
+  ) %>%
+  count(cluster, bin) %>%  # Count the number of observations in each bin for each cluster
+  group_by(cluster) %>%
+  mutate(frequency = n / sum(n)) %>%  # Calculate frequency (percentage) per cluster
+  ungroup()
+
+# Verify frequencies sum to 1 (100%) for each cluster
+all_cluster_data %>%
+  group_by(cluster) %>%
+  summarise(total_frequency = sum(frequency))  # This should be close to 1 for each cluster
+
+
+#range(shared_cost_table$`Shared Estimated Cost Share`)  # Ensure range is [0, 1]
+
+# Calculate mean cost share for each cluster
+mean_cost_shares <- shared_cost_table %>%
+  filter(!is.na(`Shared Estimated Cost Share`)) %>%
+  group_by(cluster) %>%
+  summarise(mean_cost_share = mean(`Shared Estimated Cost Share`, na.rm = TRUE)) %>%
+  mutate(mean_cost_share_percentage = mean_cost_share * 100)  # Convert to percentage
+
+print(mean_cost_shares)  # Debugging: print the means
+
+
+all_cluster_data <- all_cluster_data %>%
+  left_join(mean_cost_shares, by = "cluster")
+
+
+# Generate the multi-cluster plot with custom x-axis labels and larger subplots
+final_estimated_plot <- ggplot(all_cluster_data, aes(x = bin, y = frequency)) +
+  geom_bar(
+    stat = "identity", bins = 20, fill = "blue", color = "black", alpha = 0.9
+     
+  ) +
+  geom_vline(
+    aes(xintercept = mean_cost_share_percentage / 10),  # Divide by bin width to align
+    data = mean_cost_shares,
+    color = "red",
+    linetype = "solid",
+    size = 1
+  ) +
+  facet_wrap(~ cluster, ncol = 3) +  # Keep 3 columns but larger overall plot
+  theme_minimal() +
+  
+  labs(
+    #title = "Distribution of Shared Estimated Cost Shares By Cluster",
+    x = "Total Cost Shared with Another Project (%)",
+    y = "Frequency of Projects (%)"
+  ) +
+ theme(
+    axis.text.x = element_text(angle = 0, hjust = 0.5, size = 14),  # Horizontal x-axis labels
+    axis.text.y = element_text(size = 20),  # Adjust y-axis text size
+    strip.text = element_text(size = 25),  # Adjust facet label size
+    plot.title = element_text(size = 30, hjust = 0.5),  # Centered title without bold
+    axis.title.x = element_text(size = 25),  # Larger x-axis title
+    axis.title.y = element_text(size = 25),  # Larger y-axis title
+    plot.margin = margin(15, 15, 15, 15)  # Add consistent margins
+  ) +
+  scale_y_continuous(
+    labels = scales::percent,
+    limits = c(0, 0.85)  # Adjust based on your data range
+  ) +
+  scale_x_discrete(labels = c("0%", "10%", "20%", "30%", "40%", "50%", "60%", "70%", "80%", "90%", "100%"))
+
+
+# Save and display the final plot with increased size
+ggsave(
+  filename = paste0(output_dir, "/all_clusters_panel.png"),
+  plot = final_estimated_plot,
+  width = 16,  # Increase plot width for larger subplots
+  height = 9 ,# Increase plot height for larger subplots
+  dpi = 300
+)
+print(final_estimated_plot)
+
+
+
+```
+
+
+ 
+
+
+```{r cost histograms, echo=FALSE, warning=FALSE}
+ library(dplyr)
+library(ggplot2)
+
+# Deduplicate the data so that each q_id appears only once.
+# (We assume that for each q_id the aggregated phase‐1 cost variables are constant.)
+aggregated_costs <- scraped_itemized_data2 %>%
+  group_by(q_id) %>%
+  slice(1) %>% 
+  ungroup()
+
+## 1. Phase I POI Cost Histogram by Cluster 
+phase_1_POI_cost_histogram_cluster <- ggplot(aggregated_costs, 
+                                             aes(x = phase_1_total_POI_cost/(1000*capacity))) + 
+  geom_histogram(binwidth = 50, fill = "blue") + 
+  labs(title = "CAISO Scraped Phase I POI Cost per kW Histogram (Descalated Costs)", 
+       x = "Phase 1 POI Cost", y = "Count") +
+  facet_wrap(~ cluster, ncol = 7) +
+  xlim(c(0, 1500)) +
+  coord_flip() +
+  theme_light()
+
+phase_1_POI_cost_histogram_cluster
+
+## 2. Phase I Network Cost Histogram by Cluster
+phase_1_network_cost_histogram_cluster <- ggplot(aggregated_costs, 
+                                                 aes(x = phase_1_total_network_cost/(1000*capacity))) + 
+  geom_histogram(binwidth = 50, fill = "blue") + 
+  labs(title = "CAISO Scraped Phase I Network Cost per kW Histogram (Descalated Costs)", 
+       x = "Phase 1 Network Cost", y = "Count") +
+  facet_wrap(~ cluster, ncol = 7) +
+  xlim(c(0, 1500)) +
+  coord_flip() +
+  theme_light()
+
+phase_1_network_cost_histogram_cluster
+
+## 3. Phase I Total Cost Histogram by Cluster
+phase_1_total_cost_histogram_cluster <- ggplot(aggregated_costs, 
+                                               aes(x = phase_1_total_cost/(1000*capacity))) + 
+  geom_histogram(binwidth = 50, fill = "blue") + 
+  labs(title = "CAISO RIMS Total Phase I Cost per kW Histogram (Descalated Costs) ", 
+       x = "Phase 1 Total Cost", y = "Count") +
+  facet_wrap(~ cluster, ncol = 7) +
+  xlim(c(0, 1500)) +
+  coord_flip() +
+  theme_light()
+
+phase_1_total_cost_histogram_cluster
+
+# # Get a vector of unique clusters
+# clusters_list <- unique(aggregated_costs$cluster)
+# 
+# for(cl in clusters_list) {
+#   p <- aggregated_costs %>%
+#     filter(cluster == cl) %>%
+#     ggplot(aes(x = phase_1_total_cost/(1000*capacity))) +
+#     geom_histogram(binwidth = 50, fill = "blue") +
+#     labs(title = paste("Cluster", cl, "- Phase I Total Cost per kW Histogram (Descalated Costs)"),
+#          x = "Phase 1 Total Cost", y = "Count") +
+#     xlim(c(0, 1500)) +
+#     coord_flip() +
+#     theme_light()
+#   
+#   print(p)
+# }
+```
+```{r cost histograms Density plots, echo= FALSE, message= FALSE, warning= FALSE, fig.height =10, fig.width= 14}
+
+library(ggplot2)
+
+# 1. Phase I POI Cost Histogram by Cluster
+phase_1_POI_cost_histogram_cluster <- ggplot(aggregated_costs, 
+    aes(x = phase_1_total_POI_cost/(1000*capacity))) +
+  geom_histogram(aes(y = ..density..* 1000), binwidth = 50, fill = "blue") +
+  labs(
+    title = "CAISO Scraped Phase I POI Cost per kW Histogram (Descalated Costs)",
+    x = "Phase 1 POI Cost (USD/kW)",
+    y = "Density"
+  ) +
+  facet_wrap(~ cluster, ncol = 7) +   # 7 columns => 2 rows if 14 clusters
+  xlim(c(0, 1500)) +
+  coord_flip() +
+  theme_light()        # Increase base font size
+
+phase_1_POI_cost_histogram_cluster
+
+# 2. Phase I Network Cost Histogram by Cluster
+phase_1_network_cost_histogram_cluster <- ggplot(aggregated_costs, 
+    aes(x = phase_1_total_network_cost/(1000*capacity))) +
+  geom_histogram(aes(y = ..density..* 1000), binwidth = 50, fill = "blue") +
+  labs(
+    title = "CAISO Scraped Phase I Network Cost per kW Histogram (Descalated Costs)",
+    x = "Phase 1 Network Cost (USD/kW)",
+    y = "Density"
+  ) +
+  facet_wrap(~ cluster, ncol = 7) +
+  xlim(c(0, 1500)) +
+  coord_flip() +
+  theme_light()
+
+phase_1_network_cost_histogram_cluster
+
+# 3. Phase I Total Cost Histogram by Cluster
+phase_1_total_cost_histogram_cluster <- ggplot(aggregated_costs, 
+    aes(x = phase_1_total_cost/(1000*capacity))) +
+  geom_histogram(aes(y = ..density..), binwidth = 50, fill = "blue") +
+  labs(
+    title = "CAISO RIMS Total Phase I Cost per kW Histogram (Descalated Costs)",
+    x = "Phase 1 Total Cost (USD/kW)",
+    y = "Density"
+  ) +
+  facet_wrap(~ cluster, ncol = 7) +
+  xlim(c(0, 1500)) +
+  coord_flip() +
+  theme_light()
+
+phase_1_total_cost_histogram_cluster
+```
+
+```{r scatter plots,echo=FALSE,  warning=FALSE, message=FALSE}
+ 
+# Libraries
+library(readr)
+library(dplyr)
+library(tidyr)
+library(ggplot2)
+library(knitr)
+library(scales)
+
+options(scipen = 999)
+
+# Base paths
+CAISO_cost_data <- read_csv(paste0(project_root, "/data/working/CAISO_cost_data.csv"))
+
+# Define the range of clusters and styles
+clusters <- 7:14
+styles <- c("G", "O", "N", "Q","M", "J" ,"H", "others")  # Add all desired styles here
+
+# Loop through clusters and styles dynamically
+for (cluster in clusters) {
+  for (style in styles) {
+    cluster_dir <- paste0(project_root, "data/ic_studies/raw/04_intermediate_scraped_data/phase_1_cost_data/Cluster ", cluster)
+    plots_dir <- paste0(project_root, "/output/pdf_scraper/plots/Cluster_",cluster)
+    itemized_cost_path <- paste0(cluster_dir, "/01_clean/costs_phase_1_cluster_", cluster, "_style_", style, "_itemized_updated.csv")
+    
+    # Check if the dataset exists
+    if (file.exists(itemized_cost_path)) {
+      # Read itemized cost data
+      itemized_cost <- read_csv(itemized_cost_path)
+      
+      # Clean itemized cost data
+      itemized_cost_clean <- itemized_cost %>%
+        filter(!is.na(type_of_upgrade), item == "yes") %>%
+        select(q_id, cluster, type_of_upgrade, escalated_cost_x_1000) %>%
+        filter(!is.na(escalated_cost_x_1000) & escalated_cost_x_1000 != "-") %>%
+        mutate(escalated_cost_x_1000 = gsub("\\$", "", escalated_cost_x_1000),
+               escalated_cost_x_1000 = gsub(",", "", escalated_cost_x_1000),
+               escalated_cost_x_1000 = as.numeric(escalated_cost_x_1000)) %>%
+        group_by(q_id, type_of_upgrade) %>%
+        summarize(cost = sum(escalated_cost_x_1000), .groups = 'drop') %>%
+        pivot_wider(names_from = type_of_upgrade, values_from = cost, values_fill = 0)
+      
+        # Ensure that the RNU and LDNU columns exist; if not, add them as zero.
+        if (!"RNU" %in% names(itemized_cost_clean)) {
+          itemized_cost_clean$RNU <- 0
+        }
+        if (!"LDNU" %in% names(itemized_cost_clean)) {
+          itemized_cost_clean$LDNU <- 0
+        }
+              
+      itemized_cost_clean$network_cost <- itemized_cost_clean$RNU + itemized_cost_clean$LDNU 
+      
+      # Clean CAISO data for the current cluster
+      clean_cost_data <- CAISO_cost_data %>%
+        filter(!is.na(capacity) & capacity != 0 & !is.na(fuel)) %>%
+        mutate(
+          phase_1_total_network_cost = ifelse(is.na(phase_1_network_MCR_cost),
+                                              phase_1_total_RNU_cost + phase_1_total_LDNU_cost,
+                                              phase_1_network_MCR_cost),
+          phase_1_total_cost = phase_1_total_POI_cost + phase_1_total_network_cost
+        ) %>%
+        filter(cluster == cluster)
+      
+      
+      # Merge CAISO data and itemized cost data
+      scraped_data <- itemized_cost_clean %>%
+        select(q_id, PTO_IF, network_cost) %>%
+        rename(scraped_POI_cost = PTO_IF, scraped_network_cost = network_cost) %>%
+        mutate(scraped_POI_cost = 1000 * scraped_POI_cost, 
+               scraped_network_cost = 1000 * scraped_network_cost)
+      
+      cluster_cost <- merge(clean_cost_data, scraped_data, by = "q_id", all = TRUE)
+      
+      # Subset the data for the current cluster
+      cluster_cost <- cluster_cost %>% filter(cluster == !!cluster)
+      
+      # Determine axis limits (ensure inclusion of 45-degree line)
+      max_poi <- max(c(cluster_cost$phase_1_total_POI_cost, cluster_cost$scraped_POI_cost), na.rm = TRUE)
+      max_poi <- ifelse(max_poi > 0, max_poi * 1.05, 1)  # Add slight buffer
+      max_network <- max(c(cluster_cost$phase_1_total_network_cost, cluster_cost$scraped_network_cost), na.rm = TRUE)
+      max_network <- ifelse(max_network > 0, max_network * 1.05, 1)  # Add slight buffer
+      
+      # Plot POI cost comparison
+      if (nrow(cluster_cost) > 0) {
+        poi_plot <- ggplot(cluster_cost, aes(x = phase_1_total_POI_cost, y = scraped_POI_cost, color = cluster)) +
+          geom_point() + 
+          geom_abline(intercept = 0, slope = 1) +
+          labs(title = paste("Comparing Cluster", cluster, "Style", style, "POI Costs (Updated)"),
+               x = "Kiteworks POI Cost",
+               y = "PDF Scraped POI Cost" +
+   scale_x_continuous(labels = scales::number_format(accuracy = 1)) +  # Force standard format for x-axis
+  scale_y_continuous(labels = scales::number_format(accuracy = 1)) )
+        
+        print(poi_plot)  # Display the plot inline
+        ggsave(filename = paste0(plots_dir, "/POI_cost_comparison_cluster_", cluster, "_style_", style, ".png"), plot = poi_plot, width = 8, height = 6)
+        
+        # Plot network cost comparison
+        network_plot <- ggplot(cluster_cost, aes(x = phase_1_total_network_cost, y = scraped_network_cost, color = cluster)) +
+          geom_point() + 
+          geom_abline(intercept = 0, slope = 1) +
+          labs(title = paste("Comparing Cluster", cluster, "Style", style, "Network Costs (Updated)"),
+               x = "Kiteworks Network Cost",
+               y = "PDF Scraped Network Cost"+
+   scale_x_continuous(labels = scales::number_format(accuracy = 1)) +  # Force standard format for x-axis
+  scale_y_continuous(labels = scales::number_format(accuracy = 1)) )
+        
+        print(network_plot)  # Display the plot inline
+        ggsave(filename = paste0(plots_dir, "/network_cost_comparison_cluster_", cluster, "_style_", style, ".png"), plot = network_plot, width = 8, height = 6)
+      }
+      
+      # Create tables for differences > 1000
+      poi_differences <- cluster_cost %>%
+        filter(abs(phase_1_total_POI_cost - scraped_POI_cost) > 1000) %>%
+        select(q_id, cluster, phase_1_total_POI_cost, scraped_POI_cost)
+      
+      if (nrow(poi_differences) > 0) {
+        cat('\\newpage')
+        print(knitr::kable(poi_differences, caption = paste("Filtered POI Differences for Cluster", cluster, "Style", style, "(Differences > 1000)")))
+      }
+      
+      network_differences <- cluster_cost %>%
+        filter(abs(phase_1_total_network_cost - scraped_network_cost) > 1000) %>%
+        select(q_id, cluster, phase_1_total_network_cost, scraped_network_cost)
+      
+      if (nrow(network_differences) > 0) {
+        cat('\\newpage')
+        print(knitr::kable(network_differences, caption = paste("Filtered Network Differences for Cluster", cluster, "Style", style, "(Differences > 1000)")))
+      }
+    }
+  }
+}
+
+
+```
+
+
+
+
+
+
+
+
+```{r save-csv, echo= FALSE}
+# Save summary statistics and tabulations to CSV files
+#write_csv(summary_statistics, paste0(project_root, "/summary_statistics.csv"))
+#write_csv(positive_costs, paste0(project_root, "/positive_costs.csv"))
+#write_csv(outliers, paste0(project_root, "/outliers.csv"))
+#write_csv(total_unique_q_ids, paste0(project_root, "/total_unique_q_ids.csv"))
+#write_csv(unique_qids_by_cluster, paste0(project_root, "/unique_qids_by_cluster.csv"))
+```
+
+
+```{r, Phase 2 Scatter plots, warning=FALSE, message=FALSE,  warning=FALSE, error=FALSE, echo=FALSE, eval=FALSE, results='hide'}
+
+# Libraries
+library(readr)
+library(dplyr)
+library(tidyr)
+library(ggplot2)
+library(knitr)
+library(scales)
+
+options(scipen = 999)
+
+# Base paths
+CAISO_cost_data <- read_csv(paste0(project_root, "/data/working/CAISO_cost_data.csv"))
+
+# Define the range of clusters and styles for Phase II
+clusters <- 7:14
+styles   <- c("G", "O", "N", "Q", "M", "J", "H", "others")
+
+# Loop through clusters and styles dynamically for Phase II
+for (cluster in clusters) {
+  for (style in styles) {
+    cluster_dir       <- paste0(project_root, "/data/ic_studies/raw/04_intermediate_scraped_data/phase_2_cost_data/Cluster ", cluster)
+    plots_dir         <- paste0(project_root, "/output/pdf_scraper/plots/Cluster_", cluster)
+    itemized_path     <- paste0(cluster_dir, "/01_clean/costs_phase_2_cluster_", cluster, "_style_", style, "_itemized_updated.csv")
+    
+    # only proceed if the file exists
+    if (file.exists(itemized_path)) {
+      
+      # Read and clean itemized Phase II cost data
+      itemized_cost <- read_csv(itemized_path) %>%
+        filter(!is.na(type_of_upgrade), item == "yes") %>%
+        select(q_id, cluster, type_of_upgrade, escalated_cost_x_1000) %>%
+        filter(!is.na(escalated_cost_x_1000) & escalated_cost_x_1000 != "-") %>%
+        mutate(
+          escalated_cost_x_1000 = gsub("\\$", "", escalated_cost_x_1000),
+          escalated_cost_x_1000 = gsub(",", "", escalated_cost_x_1000),
+          escalated_cost_x_1000 = as.numeric(escalated_cost_x_1000)
+        ) %>%
+        group_by(q_id, type_of_upgrade) %>%
+        summarise(cost = sum(escalated_cost_x_1000), .groups = "drop") %>%
+        pivot_wider(names_from = type_of_upgrade, values_from = cost, values_fill = 0)
+      
+      # ensure RNU and LDNU columns exist
+      if (!"RNU" %in% names(itemized_cost)) {
+        itemized_cost$RNU <- 0
+      }
+      if (!"LDNU" %in% names(itemized_cost)) {
+        itemized_cost$LDNU <- 0
+      }
+      itemized_cost <- itemized_cost %>%
+        mutate(
+          network_cost = RNU + LDNU
+        )
+      
+      # Clean CAISO Phase II data for this cluster
+      clean_cost_data <- CAISO_cost_data %>%
+        filter(!is.na(capacity), capacity != 0, !is.na(fuel)) %>%
+        mutate(
+          phase_2_total_network_cost = ifelse(
+            is.na(phase_2_network_MCR_cost),
+            phase_2_total_RNU_cost + phase_2_total_LDNU_cost,
+            phase_2_network_MCR_cost
+          ),
+          phase_2_total_cost = phase_2_total_POI_cost + phase_2_total_network_cost
+        ) %>%
+        filter(cluster == !!cluster)
+      
+      # Merge scraped and CAISO data
+      scraped_data <- itemized_cost %>%
+        select(q_id, PTO_IF, network_cost) %>%
+        rename(
+          scraped_POI_cost     = PTO_IF,
+          scraped_network_cost = network_cost
+        ) %>%
+        mutate(
+          scraped_POI_cost     = 1000 * scraped_POI_cost,
+          scraped_network_cost = 1000 * scraped_network_cost
+        )
+      
+      cluster_cost <- clean_cost_data %>%
+        left_join(scraped_data, by = "q_id") %>%
+        filter(cluster == !!cluster)
+      
+      # determine plot limits
+      max_poi     <- max(c(cluster_cost$phase_2_total_POI_cost, cluster_cost$scraped_POI_cost), na.rm = TRUE)
+      max_poi     <- ifelse(max_poi > 0, max_poi * 1.05, 1)
+      max_network <- max(c(cluster_cost$phase_2_total_network_cost, cluster_cost$scraped_network_cost), na.rm = TRUE)
+      max_network <- ifelse(max_network > 0, max_network * 1.05, 1)
+      
+      if (nrow(cluster_cost) > 0) {
+        # POI cost comparison
+        poi_plot <- ggplot(cluster_cost, aes(x = phase_2_total_POI_cost, y = scraped_POI_cost)) +
+          geom_point() +
+          geom_abline(intercept = 0, slope = 1) +
+          scale_x_continuous(limits = c(0, max_poi), labels = number_format(accuracy = 1)) +
+          scale_y_continuous(limits = c(0, max_poi), labels = number_format(accuracy = 1)) +
+          labs(
+            title = paste("Cluster", cluster, "Style", style, "Phase II POI Cost"),
+            x     = "Kiteworks POI Cost",
+            y     = "Scraped POI Cost"
+          )
+        print(poi_plot)
+        ggsave(
+          filename = paste0(plots_dir, "/Phase2_POI_cluster_", cluster, "_style_", style, ".png"),
+          plot     = poi_plot,
+          width    = 8,
+          height   = 6
+        )
+        
+        # Network cost comparison
+        network_plot <- ggplot(cluster_cost, aes(x = phase_2_total_network_cost, y = scraped_network_cost)) +
+          geom_point() +
+          geom_abline(intercept = 0, slope = 1) +
+          scale_x_continuous(limits = c(0, max_network), labels = number_format(accuracy = 1)) +
+          scale_y_continuous(limits = c(0, max_network), labels = number_format(accuracy = 1)) +
+          labs(
+            title = paste("Cluster", cluster, "Style", style, "Phase II Network Cost"),
+            x     = "Kiteworks Network Cost",
+            y     = "Scraped Network Cost"
+          )
+        print(network_plot)
+        ggsave(
+          filename = paste0(plots_dir, "/Phase2_Network_cluster_", cluster, "_style_", style, ".png"),
+          plot     = network_plot,
+          width    = 8,
+          height   = 6
+        )
+      }
+      
+      # tables of large differences (>1000)
+      poi_diffs <- cluster_cost %>%
+        filter(abs(phase_2_total_POI_cost - scraped_POI_cost) > 1000) %>%
+        select(q_id, cluster, phase_2_total_POI_cost, scraped_POI_cost)
+      if (nrow(poi_diffs) > 0) {
+        cat("\n\\newpage\n")
+        print(
+          kable(poi_diffs, 
+                caption = paste("Phase II POI diffs >1000: Cluster", cluster, "Style", style))
+        )
+      }
+      
+      network_diffs <- cluster_cost %>%
+        filter(abs(phase_2_total_network_cost - scraped_network_cost) > 1000) %>%
+        select(q_id, cluster, phase_2_total_network_cost, scraped_network_cost)
+      if (nrow(network_diffs) > 0) {
+        cat("\n\\newpage\n")
+        print(
+          kable(network_diffs,
+                caption = paste("Phase II Network diffs >1000: Cluster", cluster, "Style", style))
+        )
+      }
+    }
+  }
+}
+
+
+```
+ 
+
+ 
+
+
+
+```{r, warning=FALSE, error=FALSE, echo=FALSE,}
+# Libraries
+library(readr)
+library(dplyr)
+library(tidyr)
+library(ggplot2)
+library(knitr)
+library(scales)
+
+options(scipen = 999)
+
+# Base paths
+CAISO_cost_data <- read_csv(paste0(project_root, "/data/working/CAISO_cost_data.csv"))
+
+# Define clusters and styles for Phase II
+clusters <- 7:14
+styles   <- c("G", "O", "N", "Q", "M", "J", "H", "others")
+
+for (cluster in clusters) {
+  for (style in styles) {
+    # Build file paths
+    cluster_dir   <- paste0(project_root, "/data/ic_studies/raw/04_intermediate_scraped_data/phase_2_cost_data/Cluster ", cluster)
+    plots_dir     <- paste0(project_root, "/output/pdf_scraper/plots/Cluster_", cluster)
+    itemized_path <- paste0(cluster_dir, "/01_clean/costs_phase_2_cluster_", cluster, "_style_", style, "_itemized_updated.csv")
+    if (!file.exists(itemized_path)) next
+
+    # 1) Read raw itemized CSV to pull metadata
+    raw_itemized <- read_csv(itemized_path, show_col_types = FALSE)
+
+    # 2) Summarize out individual upgrade costs
+    itemized_cost <- raw_itemized %>%
+      filter(!is.na(type_of_upgrade), item == "yes") %>%
+      select(q_id, type_of_upgrade, escalated_cost_x_1000) %>%
+      filter(!is.na(escalated_cost_x_1000), escalated_cost_x_1000 != "-") %>%
+      mutate(
+        escalated_cost_x_1000 = gsub("\\$", "", escalated_cost_x_1000),
+        escalated_cost_x_1000 = gsub(",", "", escalated_cost_x_1000),
+        escalated_cost_x_1000 = as.numeric(escalated_cost_x_1000)
+      ) %>%
+      group_by(q_id, type_of_upgrade) %>%
+      summarise(cost = sum(escalated_cost_x_1000), .groups = "drop") %>%
+      pivot_wider(names_from = type_of_upgrade, values_from = cost, values_fill = 0)
+
+    # 3) Extract metadata for allocation factor & total escalated
+    metadata <- raw_itemized %>%
+      filter(item == "yes") %>%
+       select(q_id,    any_of("cost_allocation_factor"), any_of("total_estimated_cost_x_1000_escalated")) %>%
+      distinct(q_id, .keep_all = TRUE) %>%
+       
+  # ensure both columns are present — if missing, create as NA
+  { 
+    df <- .
+    if (!"cost_allocation_factor" %in% names(df)) {
+      df$cost_allocation_factor <- NA_character_
+    }
+    if (!"total_estimated_cost_x_1000_escalated" %in% names(df)) {
+      df$total_estimated_cost_x_1000_escalated <- NA_character_
+    }
+    df
+  } %>%
+  
+      mutate(
+        cost_allocation_factor            = as.numeric(cost_allocation_factor),
+        total_estimated_cost_x_1000_escalated = as.numeric(total_estimated_cost_x_1000_escalated)
+      ) 
+      
+       # ensure RNU and LDNU columns exist
+      if (!"RNU" %in% names(itemized_cost)) {
+        itemized_cost$RNU <- 0
+      }
+      if (!"LDNU" %in% names(itemized_cost)) {
+        itemized_cost$LDNU <- 0
+      }
+      itemized_cost <- itemized_cost %>%
+        mutate(
+          network_cost = RNU + LDNU
+        )
+
+    # 4) Ensure RNU/LDNU exist, compute network_cost
+    if (!"RNU"  %in% names(itemized_cost)) itemized_cost$RNU  <- 0
+    if (!"LDNU" %in% names(itemized_cost)) itemized_cost$LDNU <- 0
+    itemized_cost <- itemized_cost %>%
+      mutate(network_cost = RNU + LDNU)
+
+    # 5) Build scraped_data with metadata
+    scraped_data <- itemized_cost %>%
+      select(q_id, PTO_IF, network_cost) %>%
+      rename(
+        scraped_POI_cost     = PTO_IF,
+        scraped_network_cost = network_cost
+      ) %>%
+      mutate(
+        scraped_POI_cost     = 1000 * scraped_POI_cost,
+        scraped_network_cost = 1000 * scraped_network_cost
+      ) %>%
+      left_join(metadata, by = "q_id")
+
+    # 6) Clean CAISO Phase II cost data for this cluster
+    clean_cost_data <- CAISO_cost_data %>%
+      filter(!is.na(capacity), capacity != 0, !is.na(fuel)) %>%
+      mutate(
+        phase_2_total_network_cost = ifelse(
+          is.na(phase_2_network_MCR_cost),
+          phase_2_total_RNU_cost + phase_2_total_LDNU_cost,
+          phase_2_network_MCR_cost
+        ),
+        phase_2_total_cost = phase_2_total_POI_cost + phase_2_total_network_cost
+      ) %>%
+      filter(cluster == !!cluster)
+
+    # 7) Merge and fill missing scraped costs using allocation factor
+    cluster_cost <- clean_cost_data %>%
+      left_join(scraped_data, by = "q_id") %>%
+      filter(cluster == !!cluster) %>%
+      mutate(
+        scraped_POI_cost = ifelse(
+          (is.na(scraped_POI_cost) | scraped_POI_cost == 0) &
+            !is.na(total_estimated_cost_x_1000_escalated) &
+            total_estimated_cost_x_1000_escalated > 0,
+          total_estimated_cost_x_1000_escalated * cost_allocation_factor,
+          scraped_POI_cost
+        ),
+        scraped_network_cost = ifelse(
+          (is.na(scraped_network_cost) | scraped_network_cost == 0) &
+            !is.na(total_estimated_cost_x_1000_escalated) &
+            total_estimated_cost_x_1000_escalated > 0,
+          total_estimated_cost_x_1000_escalated * cost_allocation_factor,
+          scraped_network_cost
+        )
+      )
+
+    # 8) Determine axis limits
+    max_poi     <- max(c(cluster_cost$phase_2_total_POI_cost, cluster_cost$scraped_POI_cost), na.rm = TRUE)
+    max_poi     <- ifelse(max_poi > 0, max_poi * 1.05, 1)
+    max_network <- max(c(cluster_cost$phase_2_total_network_cost, cluster_cost$scraped_network_cost), na.rm = TRUE)
+    max_network <- ifelse(max_network > 0, max_network * 1.05, 1)
+
+    # 9) Plot and save
+    if (nrow(cluster_cost) > 0) {
+      poi_plot <- ggplot(cluster_cost, aes(phase_2_total_POI_cost, scraped_POI_cost)) +
+        geom_point() +
+        geom_abline(intercept = 0, slope = 1) +
+        scale_x_continuous(limits = c(0, max_poi), labels = number_format(accuracy = 1)) +
+        scale_y_continuous(limits = c(0, max_poi), labels = number_format(accuracy = 1)) +
+        labs(
+          title = paste("Cluster", cluster, "Style", style, "Phase II POI Cost"),
+          x     = "CAISO POI Cost",
+          y     = "Scraped POI Cost"
+        )
+      print(poi_plot)
+      ggsave(paste0(plots_dir, "/Phase2_POI_cluster_", cluster, "_style_", style, ".png"),
+             plot = poi_plot, width = 8, height = 6)
+
+      network_plot <- ggplot(cluster_cost, aes(phase_2_total_network_cost, scraped_network_cost)) +
+        geom_point() +
+        geom_abline(intercept = 0, slope = 1) +
+        scale_x_continuous(limits = c(0, max_network), labels = number_format(accuracy = 1)) +
+        scale_y_continuous(limits = c(0, max_network), labels = number_format(accuracy = 1)) +
+        labs(
+          title = paste("Cluster", cluster, "Style", style, "Phase II Network Cost"),
+          x     = "CAISO Network Cost",
+          y     = "Scraped Network Cost"
+        )
+      print(network_plot)
+      ggsave(paste0(plots_dir, "/Phase2_Network_cluster_", cluster, "_style_", style, ".png"),
+             plot = network_plot, width = 8, height = 6)
+    }
+
+    # 10) Tables of large differences (>1000)
+    poi_diffs <- cluster_cost %>%
+      filter(abs(phase_2_total_POI_cost - scraped_POI_cost) > 1000) %>%
+      select(q_id, cluster, phase_2_total_POI_cost, scraped_POI_cost)
+    if (nrow(poi_diffs) > 0) {
+      cat("\n\\newpage\n")
+      print(kable(poi_diffs,
+                  caption = paste("Phase II POI diffs >1000: Cluster", cluster, "Style", style)))
+    }
+
+    network_diffs <- cluster_cost %>%
+      filter(abs(phase_2_total_network_cost - scraped_network_cost) > 1000) %>%
+      select(q_id, cluster, phase_2_total_network_cost, scraped_network_cost)
+    if (nrow(network_diffs) > 0) {
+      cat("\n\\newpage\n")
+      print(kable(network_diffs,
+                  caption = paste("Phase II Network diffs >1000: Cluster", cluster, "Style", style)))
+    }
+  }
+}
+```
+
+ 
+
+
+ 
+
+Note that the `echo = FALSE` parameter was added to the code chunk to prevent printing of the R code that generated the plot.

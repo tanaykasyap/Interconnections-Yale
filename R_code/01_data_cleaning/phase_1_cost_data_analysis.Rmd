@@ -1,0 +1,184 @@
+---
+title: "Descriptive Analysis for Phase 1 Cost data"
+author: "Tanay"
+date: "`r Sys.Date()`"
+output: pdf_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+library(tidyverse)
+library(readr)
+library(ggplot2)
+library(dplyr)
+library(stringr)
+library(readxl)
+library(openxlsx)
+library(tidyverse)
+library(dplyr)
+library(broom)
+library(lubridate)
+library(car)
+library("writexl")
+library(ggplot2)
+library(kableExtra)
+library(glmnet)
+library(stargazer)
+library(janitor)
+library(data.table)
+library(stringr)
+library(skimr)
+
+# Clear the console and environment
+rm(list=ls())
+
+# Set project path based on the environment (RStudio or command line)
+args = commandArgs(trailingOnly = TRUE)
+if (Sys.getenv("RSTUDIO") == 1) {
+  sys_info <- Sys.info()
+  if (sys_info["sysname"] == "Windows") {
+    project_root <- paste(Sys.getenv("USERPROFILE"), "/Dropbox/interconnections_data/", sep="")
+  } else if (sys_info["sysname"] == "Darwin") {
+    project_root <- paste(Sys.getenv("HOME"), "/Dropbox/interconnections_data/", sep="")
+  }
+} else {
+  project_root <- args[1]
+}
+```
+
+ 
+
+ 
+
+```{r load data, echo=FALSE}
+phase_1_cost_data <- read.csv(paste0(project_root, "data/ic_studies/clean/costs_phase_1_final_data.csv"))
+```
+
+
+
+
+```{r helper, echo=FALSE}
+# Function to compute summary statistics for a variable in a given data frame
+get_summary <- function(data, var) {
+  x <- data[[var]]
+  tibble(
+    Variable = var,
+    N = sum(!is.na(x)),
+    Mean = mean(x, na.rm = TRUE),
+    SD = sd(x, na.rm = TRUE),
+    Median = median(x, na.rm = TRUE),
+    P25 = quantile(x, 0.25, na.rm = TRUE),
+    P75 = quantile(x, 0.75, na.rm = TRUE),
+    Min = min(x, na.rm = TRUE),
+    Max = max(x, na.rm = TRUE)
+  )
+}
+
+# List of cost variables
+cost_vars <- c("PTO_cost_own", "Network_cost_own", "PTO_cost_total", "Network_cost_total")
+
+```
+
+
+```{r Overall Summary, echo=FALSE}
+overall_summary <- map_dfr(cost_vars, ~ get_summary(phase_1_cost_data, .))
+overall_summary %>%
+  kable(digits = 2, caption = "Overall Summary Statistics for Phase I Cost Variables") %>%
+  kable_styling(full_width = FALSE)
+```
+```{r cost_own_poi-zero-summary, echo=FALSE}
+library(dplyr)
+library(knitr)
+library(kableExtra)
+
+# Overall summary ------------------------------------------------------------
+
+# Compute total number of unique q_ids
+total_qids <- phase_1_cost_data %>% 
+  distinct(q_id) %>% 
+  nrow()
+
+# Compute the number of unique q_ids where cost_own_poi equals zero
+zero_cost_qids <- phase_1_cost_data %>% 
+  filter(cost_own_poi == 0) %>% 
+  distinct(q_id) %>% 
+  nrow()
+
+# Create overall summary table
+overall_summary_table <- tibble(
+  `Total q_ids` = total_qids,
+  `q_ids with cost_own_poi = 0` = zero_cost_qids
+)
+
+overall_summary_table %>%
+  kable("html", caption = "Overall Number of q_ids with cost_own_poi equal to zero") %>%
+  kable_styling(full_width = FALSE)
+
+# Summary by Cluster -----------------------------------------------------------
+
+cluster_summary <- phase_1_cost_data %>%
+  group_by(cluster) %>%
+  summarise(
+    `Total q_ids` = n_distinct(q_id),
+    `q_ids with cost_own_poi = 0` = n_distinct(q_id[cost_own_poi == 0])
+  ) %>%
+  ungroup()
+
+cluster_summary %>%
+  kable("html", caption = "Number of q_ids with cost_own_poi equal to zero by Cluster") %>%
+  kable_styling(full_width = FALSE)
+
+```
+
+
+
+
+```{r Summary by Cluster, echo=FALSE}
+clusters <- sort(unique(phase_1_cost_data$cluster))
+
+for(cl in clusters){
+  #cat("\n\n## Cluster:", cl, "\n\n")
+  cluster_data <- phase_1_cost_data %>% filter(cluster == cl)
+  cluster_summary <- map_dfr(cost_vars, ~ get_summary(cluster_data, .))
+  print(
+    kable(cluster_summary, digits = 2, caption = paste("Summary Statistics for Cluster", cl)) %>%
+      kable_styling(full_width = FALSE)
+  )
+}
+```
+
+```{r summary-tables-by-cluster, results='asis'}
+# List of cost variables for which we want summaries
+cost_vars <- c("PTO_cost_own", "Network_cost_own", "PTO_cost_total", "Network_cost_total")
+
+# Loop over each cost variable to create a table by cluster
+for (var in cost_vars) {
+  # Compute summary statistics by cluster for the current variable
+  summary_table <- phase_1_cost_data %>%
+    group_by(cluster) %>%
+    summarise(
+      N = sum(!is.na(.data[[var]])),
+      Mean = mean(.data[[var]], na.rm = TRUE),
+      SD = sd(.data[[var]], na.rm = TRUE),
+      Median = median(.data[[var]], na.rm = TRUE),
+      P25 = quantile(.data[[var]], 0.25, na.rm = TRUE),
+      P75 = quantile(.data[[var]], 0.75, na.rm = TRUE),
+      Min = min(.data[[var]], na.rm = TRUE),
+      Max = max(.data[[var]], na.rm = TRUE)
+    ) %>% 
+    ungroup()
+  
+  # Print a header and the table using kable and kableExtra for presentation
+  #cat("\n\n## Summary Statistics for", var, "by Cluster\n\n")
+  print(
+    kable(summary_table, digits = 2, 
+          caption = paste("Summary Statistics for", var, "by Cluster")) %>%
+      kable_styling(full_width = FALSE)
+  )
+}
+```
+
+ 
+
+
+ 
