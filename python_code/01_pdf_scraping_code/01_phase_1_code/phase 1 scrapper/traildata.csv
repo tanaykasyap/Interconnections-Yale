@@ -1,0 +1,43 @@
+type of upgrade,upgrade,description,cost allocation factor,estimated cost x 1000,escalated costs x 1000,estimated time  to construct
+Table 7-1: Escalated Cost and Time to Construct for Interconnection Facilities - IF,70kV Switching Station,• Install Three (3) DTT Receivers (by Q532),100.00%,$350,$384,24
+,70kV Switching Station,"• Gen – Tie Line Relays, Dead- end, PTs, and Disconnect Switch • Install Fiber Terminations",100.00%,$720,$789,24
+,Generation Site,"• Engineering Reviews, Metering, Pre-parallel Inspection, and Project Management • SCADA RTU Installation and ISTS Testing",100.00%,$349,$382,24
+,T-Line for 70kV Switching Station,• Install One (1) New TSP with conductor for Gen-Tie line and provide T-Line engineering review at 70kV Switching Station,100.00%,$170,$186,24
+,,,Total,"$1,589","$1,741",
+Reliability Network Upgrade,Upgrade,Description,Cost Allocation Factor,"Estimated Cost x 1,000","Escalated Costs x 1,000",Estimated Time (Months) to Construct (Note 1)
+,Schindler Substation,"• New DTT Transmitter, Channel Bank, & HVP Installation (by Q532)",100.00%,N/A,N/A,24
+,Huron Substation,"• New DTT Transmitter, Channel Bank & HVP Installation (by Q532)",100.00%,N/A,N/A,24
+,Gates Substation,"• New DTT Transmitter, Channel Bank & HVP Installation (by Q532)",100.00%,N/A,N/A,24
+,70kV Switching Station,"• Three (3) 70kV CBs, Dead- ends, Switches, MPAC building, and line relay packages (by Q532)",100.00%,N/A,N/A,24
+Local Delivery Network,T-Line at 70kV Switching Station,• Install one (1) new dead end tubular steel pole (TSP) with two (2) of three SCADA switches. Install two (2) in-line TSPs and one (1) shoo-fly for Construction (by Q532),100.00%,N/A,N/A,24
+,70kV Switching Station,"• One (1) 70kV CB, Dead-end, Switches, and Breaker Protection Package.",100.00%,$900,$986,24
+,Dos Amigos PP-Panoche #2 230 kV Line QC7- SPS01,• SPS to trip Q1032 for the Los Banos-Q779SS #1 230 kV Line outage and overload on Dos Amigos PP-Panonche 230 kV Line,4.84%,$106,$117,24
+,,,Total,"$1,006","$1,103",
+Local Delivery Network Upgrade,None,,,,,
+Area Delivery Network Upgrade,,,Total,,,
+Area Delivery Network Upgrade,None,,,,,
+,,,Total,,,
+Table 7-1: Escalated Cost and Time to Construct for Interconnection Facilities - IF,230kV Mustang Switching Station,"Install Deadends, Disconnect Switches, CCVTs, and associated protection equipment for the Gen- Tie line. • Developer's IT Fiber Termination",100.00%,$770,$853,24
+,Generation Site,"Engineering Reviews, Metering, Pre-parallel Inspection, & PM • IT install RTU and provide testing support",100.00%,$349,$387,24
+,Transmission Line,"Install three (3) double circuit TSPs (share of 50% of Total Costs), one (1) single circuit TSP, five (5) spans of transmission line conductor, & PG&E review. • Raise/Replace existing double circuit transmission towers",50.00%,"$1,360","$1,507",24
+,,,Total,"$2,479","$2,747",
+Reliability Network Upgrade,Upgrade,Description,Cost Allocation Factor,"Estimated Cost x 1,000","Escalated Costs x 1,000",Estimated Time (Months) to Construct (Note 1)
+,230kV Mustang Switching Station,• Install one (1) new BAAH Bay with two (2) breakers,100.00%,"$3,400","$3,768",24
+,Transmission Line,• Install three (3) double circuit TSPs (Share of 50% of the Total Costs),50.00%,$450,$499,24
+,QC8SPS-05 SPS (Deliverability Triggered RNU),• QC8SPS-05 SPS SPS to trip Q1118 300 MW Solar PV for the Westley-Q1118 SS 230 kV Line AND Los Banos 500/230 kV transformer bank overload,2.62%,$79,$87,24
+,Upgrade Gates Substation 230kV CBs Overstressed (Deliverability Triggered RNU),"• Gates Substation 230kV CB Overstress: Existing CB's 472, 482, 202, 212, 252, 262 & 382 and New CB's 4412, 4422, 4512, 4522, 4622 & 4632 will all become overstressed beyond 63kA due to the addition of a 3rd 500/230kV Transformer. Install (2) current limiting reactors between sections E & F.",12.73%,"$3,183","$3,615",30
+,Upgrade Henrietta Substation 70kV CBs Overstressed,"• Henrietta Substation 70kV CB Overstress: CB's 12, 22 & 72 are all overstressed due to Cluster 8 generators. Replace a portion of Bus ""E"" with a new Double Bus with (6) lines and (2) banks.",11.82%,"$3,900","$4,428",36
+,"Gates 230kV, 500kV Bus Flow Mitigation","• Gates Sub: Replace SW's 481, 483 & 489 tand associated jumpers to meet the required 3000A rating.",27.15%,$122,$135,18
+,Los Banos 230kV Bus Flow Mitigation,"• Replace CB's 272 & 282, SW's 287 & 289 and associated conductor to meet 4000A rating. Also, replace SW's 247 & 249 to meet 3000A rating.",13.98%,$461,$524,36
+,,,Total,"$11,595","$13,057",
+Local Delivery Network,Upgrade,Description,Cost Allocation Factor,"Estimated Cost x 1,000","Escalated Costs x 1,000",Estimated Time (Months) to Construct (Note 1)
+Local Delivery Network Upgrade,Gates 500/230 kV Transformer bank #13,"Add third 1122 MVA Gates 500/230 kV Transformer bank (bank #13, Z=7.26% at 600 MVA)",14.42%,"$7,786","$9,062",48
+,Re-conductor Gates-Arco 230 kV Line,Re-conductor 35.21 mi Gates-Arco 230 kV Line with 954 ACSS and upgrade equipment to 1030 A or more.,15.38%,"$7,429","$8,437",30
+,Re-conductor Gates- Midway 230 kV Line,Re-conductor 63.96 mi Gates-Midway 230 kV Line with 954 ACSS and upgrade equipment to 1000 A or more.,14.55%,"$18,517","$20,521",24
+,Re-conductor Borden- Gregg #2 230 kV Line,Re-conductor 6.25 mi Borden-Gregg #2 230 kV Line with 1113 ACSS and upgrade equipment to 1130 A or more.,49.23%,"$6,843","$7,771",30
+,Re-conductor Q779 SS- Panoche #1 230 kV Line,Re-conductor 32.59 mi Q779 SS- Panoche #1 230 kV Line with 954 ACSS and upgrade equipment to 1200 A.,8.53%,"$3,826","$4,345",30
+,Re-conductor Quinto SS- Los Banos 230 kV Line,Re-conductor 6.04 mi Quinto SS-Los Banos 230 kV Line with super bundled 795 ACSS and upgrade equipment to 2250 A. Total line will be 6.11 mi super bundled 795 ACSS.,9.08%,"$1,022","$1,133",24
+,,,Total,"$45,424","$51,270",
+Area Delivery Network Upgrade,Upgrade,Description,Cost Allocation Factor,"Estimated Cost x 1,000","Escalated Costs x 1,000",Estimated Time (Months) to Construct (Note 1)
+Area Delivery Network Upgrade,None,,,,,
+,,,Total,,,
